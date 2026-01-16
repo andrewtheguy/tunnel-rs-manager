@@ -6,7 +6,7 @@ mod process;
 use config::{ConfigStore, StoredConfig, TunnelClientConfig};
 use process::{ProcessManager, TunnelInstanceView};
 use std::sync::Arc;
-use tauri::State;
+use tauri::{Manager, State};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
@@ -174,7 +174,7 @@ async fn set_binary_path(state: State<'_, AppState>, path: Option<String>) -> Re
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(AppState::new())
         .invoke_handler(tauri::generate_handler![
@@ -191,6 +191,23 @@ pub fn run() {
             stop_tunnel,
             set_binary_path,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    app.run(|app_handle, event| {
+        if let tauri::RunEvent::ExitRequested { api, .. } = event {
+            // Prevent immediate exit to allow graceful shutdown
+            api.prevent_exit();
+
+            let app_handle = app_handle.clone();
+            tauri::async_runtime::spawn(async move {
+                // Stop all running tunnels
+                if let Some(state) = app_handle.try_state::<AppState>() {
+                    state.process_manager.stop_all().await;
+                }
+                // Now exit
+                app_handle.exit(0);
+            });
+        }
+    });
 }

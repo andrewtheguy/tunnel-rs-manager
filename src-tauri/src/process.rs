@@ -333,12 +333,16 @@ impl ProcessManager {
         }
     }
 
-    /// Stop all running tunnels (reserved for future graceful shutdown)
-    #[allow(dead_code)]
+    /// Stop all running tunnels and wait for them to finish
     pub async fn stop_all(&self) {
-        let instances = self.instances.read().await;
-        for (id, _) in instances.iter() {
-            let _ = self.stop(*id).await;
+        // Collect IDs first to avoid holding lock while stopping
+        let ids: Vec<Uuid> = {
+            let instances = self.instances.read().await;
+            instances.keys().copied().collect()
+        };
+
+        for id in ids {
+            let _ = self.stop(id).await;
         }
     }
 }
