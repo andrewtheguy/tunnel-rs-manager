@@ -127,8 +127,24 @@ impl ProcessManager {
         }
 
         // Search common paths for tunnel-rs binary
-        // (macOS apps launched from Finder don't inherit shell PATH)
-        let home = std::env::var("HOME").unwrap_or_default();
+        // (macOS apps launched from Finder don't inherit shell PATH,
+        //  and Windows apps need to check typical installation locations)
+        let home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .unwrap_or_default();
+
+        #[cfg(target_os = "windows")]
+        let common_paths = {
+            let local_app_data = std::env::var("LOCALAPPDATA").unwrap_or_default();
+            [
+                format!(r"{}\Programs\tunnel-rs\tunnel-rs.exe", local_app_data),
+                format!(r"{}\.local\bin\tunnel-rs.exe", home),
+                format!(r"{}\.cargo\bin\tunnel-rs.exe", home),
+                r"C:\Program Files\tunnel-rs\tunnel-rs.exe".to_string(),
+            ]
+        };
+
+        #[cfg(not(target_os = "windows"))]
         let common_paths = [
             format!("{}/.local/bin/tunnel-rs", home),
             format!("{}/.cargo/bin/tunnel-rs", home),
@@ -145,7 +161,7 @@ impl ProcessManager {
         }
 
         Err(format!(
-            "tunnel-rs binary not found. Please install it to ~/.local/bin/tunnel-rs or set a custom path. Searched: {}",
+            "tunnel-rs binary not found. Please install it or set a custom path in settings. Searched: {}",
             common_paths.join(", ")
         ))
     }

@@ -3,7 +3,7 @@
 mod config;
 mod process;
 
-use config::{ConfigStore, StoredConfig, TunnelClientConfig};
+use config::{AppSettings, ConfigStore, StoredConfig, TunnelClientConfig};
 use process::{ProcessManager, TunnelInstanceView};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -22,6 +22,7 @@ static SHUTDOWN_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 /// Application state shared across commands
 pub struct AppState {
     config_store: Mutex<ConfigStore>,
+    app_settings: Mutex<AppSettings>,
     process_manager: Arc<ProcessManager>,
     config_load_error: Option<String>,
 }
@@ -36,8 +37,18 @@ impl AppState {
                 (ConfigStore::default(), Some(error_msg))
             }
         };
+
+        let app_settings = match AppSettings::load() {
+            Ok(settings) => settings,
+            Err(e) => {
+                tracing::error!("Failed to load app settings: {}. Using default.", e);
+                AppSettings::default()
+            }
+        };
+
         Self {
             config_store: Mutex::new(config_store),
+            app_settings: Mutex::new(app_settings),
             process_manager: Arc::new(ProcessManager::new()),
             config_load_error,
         }
@@ -186,9 +197,19 @@ async fn stop_tunnel(state: State<'_, AppState>, id: String) -> Result<(), Strin
 }
 
 #[tauri::command]
+async fn get_binary_path(state: State<'_, AppState>) -> Result<Option<String>, String> {
+    let settings = state.app_settings.lock().await;
+    Ok(settings.binary_path.clone())
+}
+
+#[tauri::command]
 async fn set_binary_path(state: State<'_, AppState>, path: Option<String>) -> Result<(), String> {
-    state.process_manager.set_binary_path(path).await;
-    Ok(())
+    // Update process manager
+    state.process_manager.set_binary_path(path.clone()).await;
+    // Persist to settings
+    let mut settings = state.app_settings.lock().await;
+    settings.binary_path = path;
+    settings.save()
 }
 
 // ============================================================================
@@ -271,6 +292,7 @@ pub fn run() {
             get_instance,
             start_tunnel,
             stop_tunnel,
+            get_binary_path,
             set_binary_path,
         ])
         .setup(|app| {
@@ -288,8 +310,19 @@ pub fn run() {
                 });
             }
 
-            // Emit config load error event if there was an error during startup
+            // Apply saved settings and emit startup events
             if let Some(state) = app.try_state::<AppState>() {
+                // Apply saved binary path to process manager
+                let binary_path = tauri::async_runtime::block_on(async {
+                    state.app_settings.lock().await.binary_path.clone()
+                });
+                if let Some(path) = binary_path {
+                    tauri::async_runtime::block_on(async {
+                        state.process_manager.set_binary_path(Some(path)).await;
+                    });
+                }
+
+                // Emit config load error event if there was an error during startup
                 if let Some(ref error) = state.config_load_error {
                     let _ = app.emit("config-load-failure", error.clone());
                 }

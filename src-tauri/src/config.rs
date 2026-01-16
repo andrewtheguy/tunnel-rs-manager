@@ -91,6 +91,47 @@ pub struct ConfigStore {
     pub configs: HashMap<Uuid, StoredConfig>,
 }
 
+/// App-wide settings (persisted)
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AppSettings {
+    pub binary_path: Option<String>,
+}
+
+impl AppSettings {
+    /// Get the settings file path
+    fn settings_path() -> Result<PathBuf, String> {
+        let data_dir = dirs::data_dir()
+            .ok_or_else(|| "Could not find data directory".to_string())?;
+        let app_dir = data_dir.join("tunnel-rs-manager");
+        Ok(app_dir.join("settings.json"))
+    }
+
+    /// Load settings from disk
+    pub fn load() -> Result<Self, String> {
+        let path = Self::settings_path()?;
+        if !path.exists() {
+            return Ok(Self::default());
+        }
+        let content = fs::read_to_string(&path)
+            .map_err(|e| format!("Failed to read settings: {}", e))?;
+        serde_json::from_str(&content)
+            .map_err(|e| format!("Failed to parse settings: {}", e))
+    }
+
+    /// Save settings to disk
+    pub fn save(&self) -> Result<(), String> {
+        let path = Self::settings_path()?;
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create settings directory: {}", e))?;
+        }
+        let content = serde_json::to_string_pretty(self)
+            .map_err(|e| format!("Failed to serialize settings: {}", e))?;
+        fs::write(&path, content)
+            .map_err(|e| format!("Failed to write settings: {}", e))
+    }
+}
+
 impl ConfigStore {
     /// Get the config store file path
     fn store_path() -> Result<PathBuf, String> {
