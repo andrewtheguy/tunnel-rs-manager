@@ -79,11 +79,11 @@ bun run tauri build
 | Field | Description |
 |-------|-------------|
 | Name | A friendly name for the configuration |
-| Server Node ID | The Iroh node ID of the tunnel server |
+| Server Node ID | The [Iroh](https://iroh.computer/) node ID of the tunnel server. Iroh is a peer-to-peer networking library; the node ID is a unique identifier (public key) for the server, obtained from the tunnel-rs server output when it starts |
 | Source | Source address to connect to on the server side. Can be an IP or hostname resolved by the server (e.g., `tcp://127.0.0.1:22`, `tcp://internal-host:5432`) |
-| Target | Target address (e.g., `127.0.0.1:2222`) |
-| Auth Token | Optional authentication token |
-| Relay URLs | Optional comma-separated list of relay URLs |
+| Target | Local address where the tunnel will listen for connections (e.g., `127.0.0.1:2222`) |
+| Auth Token | Optional authentication token for server verification |
+| Relay URLs | Optional comma-separated list of Iroh relay server URLs for NAT traversal |
 
 ### Custom Binary Path
 
