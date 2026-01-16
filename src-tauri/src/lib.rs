@@ -61,12 +61,17 @@ async fn create_config(
         config.iroh.relay_urls = urls;
     }
 
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| format!("System time error: {}", e))?
+        .as_secs();
+
     let stored = StoredConfig {
         id: Uuid::new_v4(),
         name,
         config,
-        created_at: 0,
-        updated_at: 0,
+        created_at: now,
+        updated_at: now,
     };
 
     let mut store = state.config_store.lock().await;
@@ -86,10 +91,11 @@ async fn update_config(
     relay_urls: Option<Vec<String>>,
 ) -> Result<StoredConfig, String> {
     let uuid = Uuid::parse_str(&id).map_err(|e| format!("Invalid UUID: {}", e))?;
-    
+
     let mut store = state.config_store.lock().await;
     let existing = store.get(uuid).ok_or_else(|| "Config not found".to_string())?;
-    
+    let created_at = existing.created_at;
+
     let mut config = TunnelClientConfig::new(server_node_id);
     config.iroh.request_source = source;
     config.iroh.target = target;
@@ -98,12 +104,17 @@ async fn update_config(
         config.iroh.relay_urls = urls;
     }
 
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| format!("System time error: {}", e))?
+        .as_secs();
+
     let stored = StoredConfig {
         id: uuid,
         name,
         config,
-        created_at: existing.created_at,
-        updated_at: 0,
+        created_at,
+        updated_at: now,
     };
 
     store.upsert(stored.clone())?;
@@ -135,11 +146,14 @@ async fn get_instance(state: State<'_, AppState>, id: String) -> Result<Option<T
 #[tauri::command]
 async fn start_tunnel(state: State<'_, AppState>, id: String) -> Result<(), String> {
     let uuid = Uuid::parse_str(&id).map_err(|e| format!("Invalid UUID: {}", e))?;
-    
-    let store = state.config_store.lock().await;
-    let config = store.get(uuid).ok_or_else(|| "Config not found".to_string())?;
-    
-    state.process_manager.start(config).await
+
+    // Clone config and drop lock before awaiting to avoid holding lock across await
+    let config = {
+        let store = state.config_store.lock().await;
+        store.get(uuid).cloned().ok_or_else(|| "Config not found".to_string())?
+    };
+
+    state.process_manager.start(&config).await
 }
 
 #[tauri::command]

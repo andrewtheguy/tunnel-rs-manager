@@ -26,16 +26,26 @@ function App() {
   }, []);
 
   const handleCreateSubmit = useCallback(async (form: ConfigFormData) => {
-    await createConfig(form);
-    setView('list');
+    try {
+      await createConfig(form);
+      setView('list');
+    } catch (e) {
+      // Re-throw so ConfigForm can display the error
+      throw e;
+    }
   }, [createConfig]);
 
   const handleEditSubmit = useCallback(async (form: ConfigFormData) => {
-    if (editingConfig) {
-      await updateConfig(editingConfig.id, form);
+    try {
+      if (editingConfig) {
+        await updateConfig(editingConfig.id, form);
+      }
+      setView('list');
+      setEditingConfig(null);
+    } catch (e) {
+      // Re-throw so ConfigForm can display the error
+      throw e;
     }
-    setView('list');
-    setEditingConfig(null);
   }, [editingConfig, updateConfig]);
 
   const handleCancel = useCallback(() => {
@@ -50,9 +60,13 @@ function App() {
 
   const handleDelete = useCallback(async (id: string) => {
     if (window.confirm('Are you sure you want to delete this configuration?')) {
-      await deleteConfig(id);
-      if (selectedId === id) {
-        setSelectedId(null);
+      try {
+        await deleteConfig(id);
+        if (selectedId === id) {
+          setSelectedId(null);
+        }
+      } catch (e) {
+        alert(`Failed to delete configuration: ${e instanceof Error ? e.message : e}`);
       }
     }
   }, [deleteConfig, selectedId]);
