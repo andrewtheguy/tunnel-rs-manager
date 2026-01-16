@@ -114,12 +114,40 @@ impl ProcessManager {
     }
 
     /// Get the binary path to use
-    async fn get_binary(&self) -> String {
-        self.binary_path
-            .read()
-            .await
-            .clone()
-            .unwrap_or_else(|| "tunnel-rs".to_string())
+    async fn get_binary(&self) -> Result<String, String> {
+        // Return custom path if set
+        if let Some(path) = self.binary_path.read().await.clone() {
+            if std::path::Path::new(&path).exists() {
+                return Ok(path);
+            }
+            return Err(format!(
+                "Custom binary path '{}' does not exist",
+                path
+            ));
+        }
+
+        // Search common paths for tunnel-rs binary
+        // (macOS apps launched from Finder don't inherit shell PATH)
+        let home = std::env::var("HOME").unwrap_or_default();
+        let common_paths = [
+            format!("{}/.local/bin/tunnel-rs", home),
+            format!("{}/.cargo/bin/tunnel-rs", home),
+            format!("{}/bin/tunnel-rs", home),
+            "/usr/local/bin/tunnel-rs".to_string(),
+            "/opt/homebrew/bin/tunnel-rs".to_string(),
+            "/usr/bin/tunnel-rs".to_string(),
+        ];
+
+        for path in &common_paths {
+            if std::path::Path::new(path).exists() {
+                return Ok(path.clone());
+            }
+        }
+
+        Err(format!(
+            "tunnel-rs binary not found. Please install it to ~/.local/bin/tunnel-rs or set a custom path. Searched: {}",
+            common_paths.join(", ")
+        ))
     }
 
     /// Get all running instances
@@ -214,7 +242,25 @@ impl ProcessManager {
         }
 
         // Spawn the process
-        let binary = self.get_binary().await;
+        let binary = match self.get_binary().await {
+            Ok(b) => b,
+            Err(e) => {
+                // Clean up: delete temp config file, set error status, remove from instances
+                {
+                    let mut guard = instance.lock().await;
+                    guard.status = TunnelStatus::Error;
+                    guard.add_log(e.clone(), true);
+
+                    if let Err(del_err) = std::fs::remove_file(&config_path) {
+                        guard.add_log(format!("Failed to delete temp config: {}", del_err), true);
+                    }
+                    guard.temp_config_path = None;
+                }
+                let mut instances = self.instances.write().await;
+                instances.remove(&id);
+                return Err(e);
+            }
+        };
         let child = Command::new(&binary)
             .arg("client")
             .arg("-c")
