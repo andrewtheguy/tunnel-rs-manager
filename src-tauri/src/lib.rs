@@ -5,10 +5,14 @@ mod process;
 
 use config::{ConfigStore, StoredConfig, TunnelClientConfig};
 use process::{ProcessManager, TunnelInstanceView};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tauri::{Manager, State};
 use tokio::sync::Mutex;
 use uuid::Uuid;
+
+/// Guard to prevent multiple shutdown handlers from running
+static SHUTDOWN_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
 /// Application state shared across commands
 pub struct AppState {
@@ -202,14 +206,36 @@ pub fn run() {
 
     app.run(|app_handle, event| {
         if let tauri::RunEvent::ExitRequested { api, .. } = event {
+            // Check if shutdown is already in progress (compare_exchange returns Ok if we set it)
+            if SHUTDOWN_IN_PROGRESS
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                .is_err()
+            {
+                // Shutdown already in progress, ignore this event
+                api.prevent_exit();
+                return;
+            }
+
             // Prevent immediate exit to allow graceful shutdown
             api.prevent_exit();
 
             let app_handle = app_handle.clone();
             tauri::async_runtime::spawn(async move {
-                // Stop all running tunnels
+                // Stop all running tunnels with a timeout
                 if let Some(state) = app_handle.try_state::<AppState>() {
-                    state.process_manager.stop_all().await;
+                    const SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+                    match tokio::time::timeout(SHUTDOWN_TIMEOUT, state.process_manager.stop_all()).await {
+                        Ok(()) => {
+                            tracing::info!("All tunnels stopped gracefully");
+                        }
+                        Err(_) => {
+                            tracing::error!(
+                                "Shutdown timeout after {} seconds, forcing exit",
+                                SHUTDOWN_TIMEOUT.as_secs()
+                            );
+                        }
+                    }
                 }
                 // Now exit
                 app_handle.exit(0);
