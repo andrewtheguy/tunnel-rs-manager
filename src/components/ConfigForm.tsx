@@ -68,88 +68,90 @@ export function ConfigForm({ initial, onSubmit, onCancel, isEditing = false }: C
 
             {error && <div className="form-error">{error}</div>}
 
-            <div className="form-group">
-                <label htmlFor="name">Name *</label>
-                <input
-                    id="name"
-                    type="text"
-                    value={form.name}
-                    onChange={handleChange('name')}
-                    placeholder="My SSH Tunnel"
-                    autoFocus
-                />
-            </div>
-
-            <div className="form-group">
-                <label htmlFor="server_node_id">Server Node ID *</label>
-                <input
-                    id="server_node_id"
-                    type="text"
-                    value={form.server_node_id}
-                    onChange={handleChange('server_node_id')}
-                    placeholder="2xnbkpbc7izsilvewd7c62w7wnwziacmpfwvhcrya5nt76dqkpga"
-                />
-                <span className="help-text">The EndpointId of the tunnel-rs server</span>
-            </div>
-
-            <div className="form-row">
+            <fieldset disabled={submitting}>
                 <div className="form-group">
-                    <label htmlFor="source">Source Address</label>
+                    <label htmlFor="name">Name *</label>
                     <input
-                        id="source"
+                        id="name"
                         type="text"
-                        value={form.source}
-                        onChange={handleChange('source')}
-                        placeholder="tcp://127.0.0.1:22"
+                        value={form.name}
+                        onChange={handleChange('name')}
+                        placeholder="My SSH Tunnel"
+                        autoFocus
                     />
-                    <span className="help-text">Remote service to tunnel</span>
                 </div>
 
                 <div className="form-group">
-                    <label htmlFor="target">Local Target</label>
+                    <label htmlFor="server_node_id">Server Node ID *</label>
                     <input
-                        id="target"
+                        id="server_node_id"
                         type="text"
-                        value={form.target}
-                        onChange={handleChange('target')}
-                        placeholder="127.0.0.1:2222"
+                        value={form.server_node_id}
+                        onChange={handleChange('server_node_id')}
+                        placeholder="2xnbkpbc7izsilvewd7c62w7wnwziacmpfwvhcrya5nt76dqkpga"
                     />
-                    <span className="help-text">Local address to listen on</span>
+                    <span className="help-text">The EndpointId of the tunnel-rs server</span>
                 </div>
-            </div>
 
-            <div className="form-group">
-                <label htmlFor="auth_token">Auth Token</label>
-                <input
-                    id="auth_token"
-                    type="password"
-                    value={form.auth_token}
-                    onChange={handleChange('auth_token')}
-                    placeholder="iXXXXXXXXXXXXXXXXX"
-                />
-                <span className="help-text">18-character token from server admin</span>
-            </div>
+                <div className="form-row">
+                    <div className="form-group">
+                        <label htmlFor="source">Source Address</label>
+                        <input
+                            id="source"
+                            type="text"
+                            value={form.source}
+                            onChange={handleChange('source')}
+                            placeholder="tcp://127.0.0.1:22"
+                        />
+                        <span className="help-text">Remote service to tunnel</span>
+                    </div>
 
-            <div className="form-group">
-                <label htmlFor="relay_urls">Relay URLs (optional)</label>
-                <textarea
-                    id="relay_urls"
-                    value={form.relay_urls}
-                    onChange={handleChange('relay_urls')}
-                    placeholder="https://relay1.example.com, https://relay2.example.com"
-                    rows={2}
-                />
-                <span className="help-text">Comma-separated custom relay URLs</span>
-            </div>
+                    <div className="form-group">
+                        <label htmlFor="target">Local Target</label>
+                        <input
+                            id="target"
+                            type="text"
+                            value={form.target}
+                            onChange={handleChange('target')}
+                            placeholder="127.0.0.1:2222"
+                        />
+                        <span className="help-text">Local address to listen on</span>
+                    </div>
+                </div>
 
-            <div className="form-actions">
-                <button type="button" className="btn-secondary" onClick={onCancel} disabled={submitting}>
-                    Cancel
-                </button>
-                <button type="submit" className="btn-primary" disabled={submitting}>
-                    {submitting ? 'Saving...' : isEditing ? 'Save Changes' : 'Create'}
-                </button>
-            </div>
+                <div className="form-group">
+                    <label htmlFor="auth_token">Auth Token</label>
+                    <input
+                        id="auth_token"
+                        type="password"
+                        value={form.auth_token}
+                        onChange={handleChange('auth_token')}
+                        placeholder="iXXXXXXXXXXXXXXXXX"
+                    />
+                    <span className="help-text">18-character token from server admin</span>
+                </div>
+
+                <div className="form-group">
+                    <label htmlFor="relay_urls">Relay URLs (optional)</label>
+                    <textarea
+                        id="relay_urls"
+                        value={form.relay_urls}
+                        onChange={handleChange('relay_urls')}
+                        placeholder="https://relay1.example.com, https://relay2.example.com"
+                        rows={2}
+                    />
+                    <span className="help-text">Comma-separated custom relay URLs</span>
+                </div>
+
+                <div className="form-actions">
+                    <button type="button" className="btn-secondary" onClick={onCancel}>
+                        Cancel
+                    </button>
+                    <button type="submit" className="btn-primary">
+                        {submitting ? 'Saving...' : isEditing ? 'Save Changes' : 'Create'}
+                    </button>
+                </div>
+            </fieldset>
         </form>
     );
 }

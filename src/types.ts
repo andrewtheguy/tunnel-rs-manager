@@ -16,9 +16,15 @@ export interface IrohConfig {
   };
 }
 
+/** Valid tunnel role values */
+export type TunnelRole = 'client';
+
+/** Valid tunnel mode values */
+export type TunnelMode = 'iroh';
+
 export interface TunnelClientConfig {
-  role: string;
-  mode: string;
+  role: TunnelRole;
+  mode: TunnelMode;
   iroh: IrohConfig;
 }
 

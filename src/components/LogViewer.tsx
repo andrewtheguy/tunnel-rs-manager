@@ -49,7 +49,7 @@ export function LogViewer({ logs, maxHeight = '300px' }: LogViewerProps) {
     return (
         <div className="log-viewer" ref={containerRef} style={{ maxHeight }} onScroll={handleScroll}>
             {logs.map((log, index) => (
-                <div key={index} className={`log-entry ${log.is_error ? 'error' : ''}`}>
+                <div key={`${log.timestamp}-${index}`} className={`log-entry ${log.is_error ? 'error' : ''}`}>
                     <span className="log-time">{formatTime(log.timestamp)}</span>
                     <span className="log-message">{log.message}</span>
                 </div>

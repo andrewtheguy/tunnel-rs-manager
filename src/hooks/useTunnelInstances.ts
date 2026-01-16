@@ -20,10 +20,11 @@ export function useTunnelInstances() {
         }
     }, []);
 
-    // Start polling when component mounts
+    // Poll for instance updates; 5s interval balances responsiveness with resource usage.
+    // Manual actions (start/stop) call refresh() immediately for instant feedback.
     useEffect(() => {
         refresh();
-        pollingRef.current = window.setInterval(refresh, 1000);
+        pollingRef.current = window.setInterval(refresh, 5000);
         return () => {
             if (pollingRef.current) {
                 window.clearInterval(pollingRef.current);

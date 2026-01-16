@@ -2,6 +2,7 @@
 
 import type { StoredConfig, TunnelInstance } from '../types';
 import { StatusBadge } from './StatusBadge';
+import { version } from '../../package.json';
 import './Sidebar.css';
 
 interface SidebarProps {
@@ -51,6 +52,8 @@ export function Sidebar({ configs, instances, selectedId, onSelect, onAdd }: Sid
                                 >
                                     <div className="config-item-content">
                                         <span className="config-name">{config.name}</span>
+                                        {/* StoredConfig guarantees config.config.iroh exists (see types.ts);
+                                            only target is optional, handled with fallback */}
                                         <span className="config-target">
                                             {config.config.iroh.target || 'No target set'}
                                         </span>
@@ -64,7 +67,7 @@ export function Sidebar({ configs, instances, selectedId, onSelect, onAdd }: Sid
             </div>
 
             <div className="sidebar-footer">
-                <span className="version">v0.1.0</span>
+                <span className="version">v{version}</span>
             </div>
         </aside>
     );
