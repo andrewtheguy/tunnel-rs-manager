@@ -1,6 +1,6 @@
 import { useState, useCallback, useMemo } from 'react';
 import { Sidebar, TunnelCard, ConfigForm } from './components';
-import { useTunnelConfigs, useTunnelInstances } from './hooks';
+import { useTunnelConfigs, useTunnelInstances, useBinaryPath } from './hooks';
 import type { StoredConfig, ConfigFormData } from './types';
 import { storedConfigToForm } from './types';
 import './App.css';
@@ -10,6 +10,7 @@ type View = 'list' | 'create' | 'edit';
 function App() {
   const { configs, loading: configsLoading, createConfig, updateConfig, deleteConfig } = useTunnelConfigs();
   const { instances, startTunnel, stopTunnel, getInstance, loading: instancesLoading } = useTunnelInstances();
+  const { binaryPath, selectBinaryPath, clearBinaryPath } = useBinaryPath();
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [view, setView] = useState<View>('list');
@@ -86,6 +87,22 @@ function App() {
     }
   }, [stopTunnel]);
 
+  const handleSelectBinaryPath = useCallback(async () => {
+    try {
+      await selectBinaryPath();
+    } catch (e) {
+      alert(`Failed to set binary path: ${e instanceof Error ? e.message : e}`);
+    }
+  }, [selectBinaryPath]);
+
+  const handleClearBinaryPath = useCallback(async () => {
+    try {
+      await clearBinaryPath();
+    } catch (e) {
+      alert(`Failed to clear binary path: ${e instanceof Error ? e.message : e}`);
+    }
+  }, [clearBinaryPath]);
+
   return (
     <div className="app">
       <Sidebar
@@ -125,6 +142,29 @@ function App() {
                 {configs.length} configuration{configs.length !== 1 ? 's' : ''} •
                 {' '}{instances.filter(i => i.status === 'running').length} running
               </p>
+              <div className="binary-path-row">
+                <span className="binary-path-info" title={binaryPath || 'Auto-detect'}>
+                  Binary: {binaryPath ? binaryPath : 'Auto-detect'}
+                </span>
+                <div className="binary-path-actions">
+                  <button
+                    className="btn-small"
+                    onClick={handleSelectBinaryPath}
+                    title="Select binary path"
+                  >
+                    {binaryPath ? 'Change' : 'Set Path'}
+                  </button>
+                  {binaryPath && (
+                    <button
+                      className="btn-small btn-secondary"
+                      onClick={handleClearBinaryPath}
+                      title="Clear custom path and use auto-detect"
+                    >
+                      Clear
+                    </button>
+                  )}
+                </div>
+              </div>
             </header>
 
             {configsLoading ? (
