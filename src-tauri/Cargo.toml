@@ -1,16 +1,11 @@
 [package]
 name = "tunnel-rs-manager"
 version = "0.1.0"
-description = "A Tauri App"
+description = "A desktop app to manage tunnel-rs client instances"
 authors = ["you"]
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [lib]
-# The `_lib` suffix may seem redundant but it is necessary
-# to make the lib name unique and wouldn't conflict with the bin name.
-# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
 name = "tunnel_rs_manager_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
@@ -22,4 +17,8 @@ tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-
+tokio = { version = "1", features = ["process", "io-util", "sync", "macros", "time"] }
+toml = "0.8"
+uuid = { version = "1", features = ["v4", "serde"] }
+dirs = "5"
+tracing = "0.1"

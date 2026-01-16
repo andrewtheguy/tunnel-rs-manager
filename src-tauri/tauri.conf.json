@@ -13,8 +13,8 @@
     "windows": [
       {
         "title": "tunnel-rs-manager",
-        "width": 800,
-        "height": 600
+        "width": 1100,
+        "height": 750
       }
     ],
     "security": {
