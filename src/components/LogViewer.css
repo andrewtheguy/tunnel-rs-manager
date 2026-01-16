@@ -1,0 +1,64 @@
+.log-viewer {
+    font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Code', monospace;
+    font-size: 12px;
+    line-height: 1.6;
+    background: rgba(0, 0, 0, 0.3);
+    border-radius: 8px;
+    padding: 12px;
+    overflow-y: auto;
+    overflow-x: hidden;
+}
+
+.log-viewer.empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 100px;
+}
+
+.empty-text {
+    color: #6b7280;
+    font-style: italic;
+}
+
+.log-entry {
+    display: flex;
+    gap: 12px;
+    padding: 2px 0;
+    word-break: break-word;
+}
+
+.log-entry.error .log-message {
+    color: #fca5a5;
+}
+
+.log-time {
+    color: #6b7280;
+    flex-shrink: 0;
+    font-size: 11px;
+}
+
+.log-message {
+    color: #e5e7eb;
+    flex: 1;
+    white-space: pre-wrap;
+}
+
+/* Scrollbar styling */
+.log-viewer::-webkit-scrollbar {
+    width: 6px;
+}
+
+.log-viewer::-webkit-scrollbar-track {
+    background: rgba(0, 0, 0, 0.2);
+    border-radius: 3px;
+}
+
+.log-viewer::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.15);
+    border-radius: 3px;
+}
+
+.log-viewer::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.25);
+}

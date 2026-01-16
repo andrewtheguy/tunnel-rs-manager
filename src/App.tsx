@@ -1,50 +1,166 @@
-import { useState } from "react";
-import reactLogo from "./assets/react.svg";
-import { invoke } from "@tauri-apps/api/core";
-import "./App.css";
+import { useState, useCallback, useMemo } from 'react';
+import { Sidebar, TunnelCard, ConfigForm } from './components';
+import { useTunnelConfigs, useTunnelInstances } from './hooks';
+import type { StoredConfig, ConfigFormData } from './types';
+import { storedConfigToForm } from './types';
+import './App.css';
+
+type View = 'list' | 'create' | 'edit';
 
 function App() {
-  const [greetMsg, setGreetMsg] = useState("");
-  const [name, setName] = useState("");
+  const { configs, loading: configsLoading, createConfig, updateConfig, deleteConfig } = useTunnelConfigs();
+  const { instances, startTunnel, stopTunnel, getInstance, loading: instancesLoading } = useTunnelInstances();
 
-  async function greet() {
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    setGreetMsg(await invoke("greet", { name }));
-  }
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [view, setView] = useState<View>('list');
+  const [editingConfig, setEditingConfig] = useState<StoredConfig | null>(null);
+
+  const handleAdd = useCallback(() => {
+    setView('create');
+    setEditingConfig(null);
+  }, []);
+
+  const handleEdit = useCallback((config: StoredConfig) => {
+    setEditingConfig(config);
+    setView('edit');
+  }, []);
+
+  const handleCreateSubmit = useCallback(async (form: ConfigFormData) => {
+    try {
+      await createConfig(form);
+      setView('list');
+    } catch (e) {
+      alert(`Failed to create configuration: ${e instanceof Error ? e.message : e}`);
+    }
+  }, [createConfig]);
+
+  const handleEditSubmit = useCallback(async (form: ConfigFormData) => {
+    if (!editingConfig) {
+      throw new Error('No editing config selected');
+    }
+    try {
+      await updateConfig(editingConfig.id, form);
+      setView('list');
+      setEditingConfig(null);
+    } catch (e) {
+      alert(`Failed to update configuration: ${e instanceof Error ? e.message : e}`);
+    }
+  }, [editingConfig, updateConfig]);
+
+  const handleCancel = useCallback(() => {
+    setView('list');
+    setEditingConfig(null);
+  }, []);
+
+  const editingFormData = useMemo(
+    () => editingConfig ? storedConfigToForm(editingConfig) : undefined,
+    [editingConfig]
+  );
+
+  const handleDelete = useCallback(async (id: string) => {
+    if (window.confirm('Are you sure you want to delete this configuration?')) {
+      try {
+        await deleteConfig(id);
+        if (selectedId === id) {
+          setSelectedId(null);
+        }
+      } catch (e) {
+        alert(`Failed to delete configuration: ${e instanceof Error ? e.message : e}`);
+      }
+    }
+  }, [deleteConfig, selectedId]);
+
+  const handleStart = useCallback(async (id: string) => {
+    try {
+      await startTunnel(id);
+    } catch (e) {
+      alert(`Failed to start tunnel: ${e instanceof Error ? e.message : e}`);
+    }
+  }, [startTunnel]);
+
+  const handleStop = useCallback(async (id: string) => {
+    try {
+      await stopTunnel(id);
+    } catch (e) {
+      alert(`Failed to stop tunnel: ${e instanceof Error ? e.message : e}`);
+    }
+  }, [stopTunnel]);
 
   return (
-    <main className="container">
-      <h1>Welcome to Tauri + React</h1>
+    <div className="app">
+      <Sidebar
+        configs={configs}
+        instances={instances}
+        selectedId={selectedId}
+        onSelect={setSelectedId}
+        onAdd={handleAdd}
+      />
 
-      <div className="row">
-        <a href="https://vitejs.dev" target="_blank">
-          <img src="/vite.svg" className="logo vite" alt="Vite logo" />
-        </a>
-        <a href="https://tauri.app" target="_blank">
-          <img src="/tauri.svg" className="logo tauri" alt="Tauri logo" />
-        </a>
-        <a href="https://reactjs.org" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
-      </div>
-      <p>Click on the Tauri, Vite, and React logos to learn more.</p>
+      <main className="main-content">
+        {view === 'create' && (
+          <div className="form-container">
+            <ConfigForm
+              onSubmit={handleCreateSubmit}
+              onCancel={handleCancel}
+            />
+          </div>
+        )}
 
-      <form
-        className="row"
-        onSubmit={(e) => {
-          e.preventDefault();
-          greet();
-        }}
-      >
-        <input
-          id="greet-input"
-          onChange={(e) => setName(e.currentTarget.value)}
-          placeholder="Enter a name..."
-        />
-        <button type="submit">Greet</button>
-      </form>
-      <p>{greetMsg}</p>
-    </main>
+        {view === 'edit' && editingFormData && (
+          <div className="form-container">
+            <ConfigForm
+              initial={editingFormData}
+              onSubmit={handleEditSubmit}
+              onCancel={handleCancel}
+              isEditing
+            />
+          </div>
+        )}
+
+        {view === 'list' && (
+          <>
+            <header className="main-header">
+              <h2>Tunnel Configurations</h2>
+              <p className="header-subtitle">
+                {configs.length} configuration{configs.length !== 1 ? 's' : ''} •
+                {' '}{instances.filter(i => i.status === 'running').length} running
+              </p>
+            </header>
+
+            {configsLoading ? (
+              <div className="loading-state">
+                <div className="spinner" />
+                <p>Loading configurations...</p>
+              </div>
+            ) : configs.length === 0 ? (
+              <div className="empty-main">
+                <div className="empty-icon">🚇</div>
+                <h3>No tunnels configured</h3>
+                <p>Create your first tunnel configuration to get started.</p>
+                <button className="btn-primary" onClick={handleAdd}>
+                  + Create Configuration
+                </button>
+              </div>
+            ) : (
+              <div className="cards-grid">
+                {configs.map(config => (
+                  <TunnelCard
+                    key={config.id}
+                    config={config}
+                    instance={getInstance(config.id)}
+                    onStart={() => handleStart(config.id)}
+                    onStop={() => handleStop(config.id)}
+                    onEdit={() => handleEdit(config)}
+                    onDelete={() => handleDelete(config.id)}
+                    loading={instancesLoading}
+                  />
+                ))}
+              </div>
+            )}
+          </>
+        )}
+      </main>
+    </div>
   );
 }
 
