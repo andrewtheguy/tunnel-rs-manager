@@ -7,7 +7,7 @@ use config::{ConfigStore, StoredConfig, TunnelClientConfig};
 use process::{ProcessManager, TunnelInstanceView};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
@@ -18,20 +18,23 @@ static SHUTDOWN_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 pub struct AppState {
     config_store: Mutex<ConfigStore>,
     process_manager: Arc<ProcessManager>,
+    config_load_error: Option<String>,
 }
 
 impl AppState {
     fn new() -> Self {
-        let config_store = match ConfigStore::load() {
-            Ok(store) => store,
+        let (config_store, config_load_error) = match ConfigStore::load() {
+            Ok(store) => (store, None),
             Err(e) => {
-                tracing::error!("Failed to load config store: {}. Using default.", e);
-                ConfigStore::default()
+                let error_msg = format!("Failed to load config store: {}. Using default.", e);
+                tracing::error!("{}", error_msg);
+                (ConfigStore::default(), Some(error_msg))
             }
         };
         Self {
             config_store: Mutex::new(config_store),
             process_manager: Arc::new(ProcessManager::new()),
+            config_load_error,
         }
     }
 }
@@ -138,6 +141,11 @@ async fn delete_config(state: State<'_, AppState>, id: String) -> Result<(), Str
     store.delete(uuid)
 }
 
+#[tauri::command]
+fn get_config_load_error(state: State<'_, AppState>) -> Option<String> {
+    state.config_load_error.clone()
+}
+
 // ============================================================================
 // Process Commands
 // ============================================================================
@@ -194,6 +202,7 @@ pub fn run() {
             create_config,
             update_config,
             delete_config,
+            get_config_load_error,
             // Process commands
             list_instances,
             get_instance,
@@ -201,6 +210,15 @@ pub fn run() {
             stop_tunnel,
             set_binary_path,
         ])
+        .setup(|app| {
+            // Emit config load error event if there was an error during startup
+            if let Some(state) = app.try_state::<AppState>() {
+                if let Some(ref error) = state.config_load_error {
+                    let _ = app.emit("config-load-failure", error.clone());
+                }
+            }
+            Ok(())
+        })
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 
