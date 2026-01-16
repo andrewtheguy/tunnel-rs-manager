@@ -12,25 +12,23 @@ A cross-platform desktop application to manage [tunnel-rs](https://github.com/an
 - Custom binary path support
 - Cross-platform: macOS, Windows
 
-## Prerequisites
+## Bundled Binary
 
-You need to have the `tunnel-rs` binary installed on your system. The app will automatically search for it in common locations:
+This application includes a bundled `tunnel-rs` binary, so no separate installation is required. The bundled version is:
 
-**macOS:**
-- `~/.local/bin/tunnel-rs`
-- `~/.cargo/bin/tunnel-rs`
-- `~/bin/tunnel-rs`
-- `/usr/local/bin/tunnel-rs`
-- `/opt/homebrew/bin/tunnel-rs`
-- `/usr/bin/tunnel-rs`
+| Component | Version | Source |
+|-----------|---------|--------|
+| tunnel-rs | **0.1.63** | [GitHub Release](https://github.com/andrewtheguy/tunnel-rs/releases/tag/0.1.63) |
 
-**Windows:**
-- `%LOCALAPPDATA%\Programs\tunnel-rs\tunnel-rs.exe` (default installer location)
-- `%USERPROFILE%\.local\bin\tunnel-rs.exe`
-- `%USERPROFILE%\.cargo\bin\tunnel-rs.exe`
-- `C:\Program Files\tunnel-rs\tunnel-rs.exe`
+### Supported Platforms
 
-If `tunnel-rs` is not found automatically, you can set a custom binary path (see [Custom Binary Path](#custom-binary-path) below).
+| Platform | Architecture | Status |
+|----------|--------------|--------|
+| macOS | ARM64 (Apple Silicon) | Bundled |
+| Windows | AMD64 (x86_64) | Bundled |
+| macOS | Intel (x86_64) | Not bundled (use custom binary) |
+
+If you need to use a different version or an unsupported platform, you can specify a custom binary path (see [Custom Binary Path](#custom-binary-path) below).
 
 ## Installation
 
@@ -87,13 +85,13 @@ bun run tauri build
 
 ### Custom Binary Path
 
-If `tunnel-rs` is installed in a non-standard location, you can set a custom path from the main window:
+By default, the app uses the bundled `tunnel-rs` binary. If you need to use a different version or your platform isn't supported, you can set a custom binary path:
 
-1. Look for the "Binary:" row in the header showing the current path (or "Auto-detect")
-2. Click **Set Path** to open a file browser and select your `tunnel-rs` binary
+1. Look for the "Binary:" row in the header showing "Bundled" or the custom path
+2. Click **Use Custom** to open a file browser and select your `tunnel-rs` binary
 3. The path is saved and persisted across app restarts
 
-To revert to auto-detection, click **Clear** next to the binary path.
+To revert to the bundled binary, click **Use Bundled** next to the binary path.
 
 ## Data Storage
 
@@ -117,6 +115,9 @@ tunnel-rs-manager/
 │   ├── hooks/              # React hooks for state management
 │   └── types.ts            # TypeScript type definitions
 ├── src-tauri/              # Tauri backend (Rust)
+│   ├── binaries/           # Bundled tunnel-rs binaries (sidecar)
+│   │   ├── tunnel-rs-aarch64-apple-darwin
+│   │   └── tunnel-rs-x86_64-pc-windows-msvc.exe
 │   ├── src/
 │   │   ├── config.rs       # Configuration storage
 │   │   ├── process.rs      # Process management

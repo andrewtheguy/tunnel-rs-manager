@@ -4,8 +4,11 @@ use crate::config::StoredConfig;
 use std::collections::{HashMap, VecDeque};
 use std::process::Stdio;
 use std::sync::Arc;
+use tauri::AppHandle;
+use tauri_plugin_shell::process::CommandChild;
+use tauri_plugin_shell::ShellExt;
 use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::{Child, Command};
+use tokio::process::Child;
 use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
@@ -27,12 +30,18 @@ pub struct LogEntry {
     pub is_error: bool,
 }
 
+/// Enum to hold either a tokio Child or a sidecar CommandChild
+pub enum ChildProcess {
+    Tokio(Child),
+    Sidecar(CommandChild),
+}
+
 /// A running tunnel instance
 pub struct TunnelInstance {
     pub config_id: Uuid,
     pub config_name: String,
     pub status: TunnelStatus,
-    pub child: Option<Child>,
+    pub child: Option<ChildProcess>,
     pub logs: VecDeque<LogEntry>,
     pub temp_config_path: Option<std::path::PathBuf>,
 }
@@ -91,7 +100,8 @@ impl From<&TunnelInstance> for TunnelInstanceView {
 /// Manager for all tunnel processes
 pub struct ProcessManager {
     instances: RwLock<HashMap<Uuid, Arc<Mutex<TunnelInstance>>>>,
-    binary_path: RwLock<Option<String>>,
+    custom_binary_path: RwLock<Option<String>>,
+    app_handle: RwLock<Option<AppHandle>>,
 }
 
 impl Default for ProcessManager {
@@ -104,74 +114,24 @@ impl ProcessManager {
     pub fn new() -> Self {
         Self {
             instances: RwLock::new(HashMap::new()),
-            binary_path: RwLock::new(None),
+            custom_binary_path: RwLock::new(None),
+            app_handle: RwLock::new(None),
         }
     }
 
-    /// Set custom binary path (default: "tunnel-rs" in PATH)
-    pub async fn set_binary_path(&self, path: Option<String>) {
-        *self.binary_path.write().await = path;
+    /// Set the app handle for sidecar spawning
+    pub async fn set_app_handle(&self, handle: AppHandle) {
+        *self.app_handle.write().await = Some(handle);
     }
 
-    /// Get the binary path to use
-    async fn get_binary(&self) -> Result<String, String> {
-        // Return custom path if set
-        if let Some(path) = self.binary_path.read().await.clone() {
-            if std::path::Path::new(&path).exists() {
-                return Ok(path);
-            }
-            return Err(format!(
-                "Custom binary path '{}' does not exist",
-                path
-            ));
-        }
+    /// Set custom binary path (None means use bundled sidecar)
+    pub async fn set_custom_binary_path(&self, path: Option<String>) {
+        *self.custom_binary_path.write().await = path;
+    }
 
-        // Search common paths for tunnel-rs binary
-        // (macOS apps launched from Finder don't inherit shell PATH,
-        //  and Windows apps need to check typical installation locations)
-        let home = std::env::var("HOME")
-            .ok()
-            .or_else(|| std::env::var("USERPROFILE").ok());
-
-        #[cfg(target_os = "windows")]
-        let common_paths = {
-            let local_app_data = std::env::var("LOCALAPPDATA").ok();
-            let mut paths = Vec::new();
-            if let Some(ref lad) = local_app_data {
-                paths.push(format!(r"{}\Programs\tunnel-rs\tunnel-rs.exe", lad));
-            }
-            if let Some(ref h) = home {
-                paths.push(format!(r"{}\.local\bin\tunnel-rs.exe", h));
-                paths.push(format!(r"{}\.cargo\bin\tunnel-rs.exe", h));
-            }
-            paths.push(r"C:\Program Files\tunnel-rs\tunnel-rs.exe".to_string());
-            paths
-        };
-
-        #[cfg(not(target_os = "windows"))]
-        let common_paths = {
-            let mut paths = Vec::new();
-            if let Some(ref h) = home {
-                paths.push(format!("{}/.local/bin/tunnel-rs", h));
-                paths.push(format!("{}/.cargo/bin/tunnel-rs", h));
-                paths.push(format!("{}/bin/tunnel-rs", h));
-            }
-            paths.push("/usr/local/bin/tunnel-rs".to_string());
-            paths.push("/opt/homebrew/bin/tunnel-rs".to_string());
-            paths.push("/usr/bin/tunnel-rs".to_string());
-            paths
-        };
-
-        for path in &common_paths {
-            if std::path::Path::new(path).exists() {
-                return Ok(path.clone());
-            }
-        }
-
-        Err(format!(
-            "tunnel-rs binary not found. Please install it or set a custom path. Searched: {}",
-            common_paths.join(", ")
-        ))
+    /// Check if using bundled binary
+    pub async fn is_using_bundled(&self) -> bool {
+        self.custom_binary_path.read().await.is_none()
     }
 
     /// Get all running instances
@@ -265,30 +225,71 @@ impl ProcessManager {
             guard.temp_config_path = Some(config_path.clone());
         }
 
-        // Spawn the process
-        let binary = match self.get_binary().await {
-            Ok(b) => b,
-            Err(e) => {
-                // Clean up: delete temp config file, set error status, remove from instances
-                {
-                    let mut guard = instance.lock().await;
-                    guard.status = TunnelStatus::Error;
-                    guard.add_log(e.clone(), true);
+        // Check if we should use custom binary or sidecar
+        let custom_path = self.custom_binary_path.read().await.clone();
 
-                    if let Err(del_err) = std::fs::remove_file(&config_path) {
-                        guard.add_log(format!("Failed to delete temp config: {}", del_err), true);
-                    }
-                    guard.temp_config_path = None;
+        if let Some(binary_path) = custom_path {
+            // Use custom binary path with tokio::process::Command
+            self.start_with_custom_binary(&instance, id, &binary_path, &config_path)
+                .await
+        } else {
+            // Use bundled sidecar
+            self.start_with_sidecar(&instance, id, &config_path).await
+        }
+    }
+
+    /// Clean up a failed instance: set error status, log message, remove temp config, remove from map
+    async fn cleanup_failed_instance(
+        &self,
+        instance: &Arc<Mutex<TunnelInstance>>,
+        id: Uuid,
+        error_msg: &str,
+    ) {
+        {
+            let mut guard = instance.lock().await;
+            guard.status = TunnelStatus::Error;
+            guard.add_log(error_msg.to_string(), true);
+            if let Some(ref path) = guard.temp_config_path {
+                if let Err(del_err) = std::fs::remove_file(path) {
+                    guard.add_log(format!("Failed to delete temp config: {}", del_err), true);
                 }
-                let mut instances = self.instances.write().await;
-                instances.remove(&id);
-                return Err(e);
             }
-        };
-        let child = Command::new(&binary)
+            guard.temp_config_path = None;
+        }
+        let mut instances = self.instances.write().await;
+        instances.remove(&id);
+    }
+
+    /// Start tunnel using custom binary path
+    async fn start_with_custom_binary(
+        &self,
+        instance: &Arc<Mutex<TunnelInstance>>,
+        id: Uuid,
+        binary_path: &str,
+        config_path: &std::path::Path,
+    ) -> Result<(), String> {
+        // Verify binary exists (async)
+        match tokio::fs::try_exists(binary_path).await {
+            Ok(true) => {} // Binary exists, continue
+            Ok(false) => {
+                let error_msg = format!("Custom binary path '{}' does not exist", binary_path);
+                self.cleanup_failed_instance(instance, id, &error_msg).await;
+                return Err(error_msg);
+            }
+            Err(e) => {
+                let error_msg = format!(
+                    "Failed to check if custom binary path '{}' exists: {}",
+                    binary_path, e
+                );
+                self.cleanup_failed_instance(instance, id, &error_msg).await;
+                return Err(error_msg);
+            }
+        }
+
+        let child = tokio::process::Command::new(binary_path)
             .arg("client")
             .arg("-c")
-            .arg(&config_path)
+            .arg(config_path)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true)
@@ -297,21 +298,9 @@ impl ProcessManager {
         let mut child = match child {
             Ok(c) => c,
             Err(e) => {
-                // Clean up: delete temp config file, set error status, remove from instances
-                {
-                    let mut guard = instance.lock().await;
-                    guard.status = TunnelStatus::Error;
-                    guard.add_log(format!("Failed to spawn tunnel-rs: {}", e), true);
-
-                    // Clean up temp config file
-                    if let Err(del_err) = std::fs::remove_file(&config_path) {
-                        guard.add_log(format!("Failed to delete temp config: {}", del_err), true);
-                    }
-                    guard.temp_config_path = None;
-                }
-                let mut instances = self.instances.write().await;
-                instances.remove(&id);
-                return Err(format!("Failed to spawn tunnel-rs: {}", e));
+                let error_msg = format!("Failed to spawn tunnel-rs: {}", e);
+                self.cleanup_failed_instance(instance, id, &error_msg).await;
+                return Err(error_msg);
             }
         };
 
@@ -321,12 +310,19 @@ impl ProcessManager {
 
         {
             let mut guard = instance.lock().await;
-            guard.child = Some(child);
+            guard.child = Some(ChildProcess::Tokio(child));
             guard.status = TunnelStatus::Running;
-            guard.add_log(format!("Started with config: {}", config_path.display()), false);
+            guard.add_log(
+                format!(
+                    "Started with custom binary: {} (config: {})",
+                    binary_path,
+                    config_path.display()
+                ),
+                false,
+            );
         }
 
-        // Spawn log readers
+        // Spawn log readers for tokio child
         let instance_clone = instance.clone();
         if let Some(stdout) = stdout {
             tokio::spawn(async move {
@@ -349,23 +345,29 @@ impl ProcessManager {
             });
         }
 
-        // Spawn process monitor
+        // Spawn process monitor for tokio child
         let instance_clone = instance.clone();
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
                 let mut guard = instance_clone.lock().await;
-                if let Some(ref mut child) = guard.child {
+                if let Some(ChildProcess::Tokio(ref mut child)) = guard.child {
                     match child.try_wait() {
                         Ok(Some(status)) => {
-                            guard.status = if status.success() {
-                                TunnelStatus::Stopped
-                            } else {
-                                TunnelStatus::Error
-                            };
-                            guard.add_log(format!("Process exited with status: {}", status), !status.success());
+                            // Preserve Stopped status if already set by stop()
+                            if !matches!(guard.status, TunnelStatus::Stopped) {
+                                guard.status = if status.success() {
+                                    TunnelStatus::Stopped
+                                } else {
+                                    TunnelStatus::Error
+                                };
+                            }
+                            guard.add_log(
+                                format!("Process exited with status: {}", status),
+                                !status.success(),
+                            );
                             guard.child = None;
-                            
+
                             // Clean up temp config
                             if let Some(ref path) = guard.temp_config_path {
                                 let _ = std::fs::remove_file(path);
@@ -390,27 +392,138 @@ impl ProcessManager {
         Ok(())
     }
 
+    /// Start tunnel using bundled sidecar
+    async fn start_with_sidecar(
+        &self,
+        instance: &Arc<Mutex<TunnelInstance>>,
+        id: Uuid,
+        config_path: &std::path::Path,
+    ) -> Result<(), String> {
+        let app_handle = match self.app_handle.read().await.clone() {
+            Some(handle) => handle,
+            None => {
+                let error_msg = "App handle not set";
+                self.cleanup_failed_instance(instance, id, error_msg).await;
+                return Err(error_msg.to_string());
+            }
+        };
+
+        let sidecar_command = match app_handle.shell().sidecar("tunnel-rs") {
+            Ok(cmd) => cmd.args(["client", "-c", &config_path.to_string_lossy()]),
+            Err(e) => {
+                let error_msg = format!("Failed to create sidecar command: {}", e);
+                self.cleanup_failed_instance(instance, id, &error_msg).await;
+                return Err(error_msg);
+            }
+        };
+
+        let (mut rx, child) = match sidecar_command.spawn() {
+            Ok(result) => result,
+            Err(e) => {
+                let error_msg = format!("Failed to spawn sidecar: {}", e);
+                self.cleanup_failed_instance(instance, id, &error_msg).await;
+                return Err(error_msg);
+            }
+        };
+
+        {
+            let mut guard = instance.lock().await;
+            guard.child = Some(ChildProcess::Sidecar(child));
+            guard.status = TunnelStatus::Running;
+            guard.add_log(
+                format!(
+                    "Started with bundled sidecar (config: {})",
+                    config_path.display()
+                ),
+                false,
+            );
+        }
+
+        // Spawn log reader for sidecar (uses event-based output)
+        let instance_clone = instance.clone();
+        tokio::spawn(async move {
+            use tauri_plugin_shell::process::CommandEvent;
+
+            while let Some(event) = rx.recv().await {
+                let mut guard = instance_clone.lock().await;
+                match event {
+                    CommandEvent::Stdout(line) => {
+                        guard.add_log(String::from_utf8_lossy(&line).to_string(), false);
+                    }
+                    CommandEvent::Stderr(line) => {
+                        guard.add_log(String::from_utf8_lossy(&line).to_string(), true);
+                    }
+                    CommandEvent::Terminated(payload) => {
+                        // Preserve Stopped status if already set by stop()
+                        if !matches!(guard.status, TunnelStatus::Stopped) {
+                            let success = payload.code == Some(0);
+                            guard.status = if success {
+                                TunnelStatus::Stopped
+                            } else {
+                                TunnelStatus::Error
+                            };
+                        }
+                        let exit_msg = match payload.code {
+                            Some(code) => format!("Process exited with code: {}", code),
+                            None => "Process terminated by signal".to_string(),
+                        };
+                        let is_error = payload.code != Some(0);
+                        guard.add_log(exit_msg, is_error);
+                        guard.child = None;
+
+                        // Clean up temp config
+                        if let Some(ref path) = guard.temp_config_path {
+                            let _ = std::fs::remove_file(path);
+                        }
+                        break;
+                    }
+                    CommandEvent::Error(err) => {
+                        guard.status = TunnelStatus::Error;
+                        guard.add_log(format!("Process error: {}", err), true);
+                        guard.child = None;
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        });
+
+        Ok(())
+    }
+
     /// Stop a running tunnel
     pub async fn stop(&self, id: Uuid) -> Result<(), String> {
         let instances = self.instances.read().await;
         if let Some(instance) = instances.get(&id) {
             let mut guard = instance.lock().await;
-            
-            if let Some(ref mut child) = guard.child {
-                child.kill().await
-                    .map_err(|e| format!("Failed to kill process: {}", e))?;
-                guard.add_log("Tunnel stopped by user".to_string(), false);
+
+            match guard.child.take() {
+                Some(ChildProcess::Tokio(mut child)) => {
+                    child
+                        .kill()
+                        .await
+                        .map_err(|e| format!("Failed to kill process: {}", e))?;
+                    guard.add_log("Tunnel stopped by user".to_string(), false);
+                }
+                Some(ChildProcess::Sidecar(child)) => {
+                    child
+                        .kill()
+                        .map_err(|e| format!("Failed to kill process: {}", e))?;
+                    guard.add_log("Tunnel stopped by user".to_string(), false);
+                }
+                None => {
+                    // No child to kill
+                }
             }
-            
+
             guard.status = TunnelStatus::Stopped;
-            guard.child = None;
-            
+
             // Clean up temp config
             if let Some(ref path) = guard.temp_config_path {
                 let _ = std::fs::remove_file(path);
                 guard.temp_config_path = None;
             }
-            
+
             Ok(())
         } else {
             Err("Tunnel not found".to_string())

@@ -197,13 +197,13 @@ async fn stop_tunnel(state: State<'_, AppState>, id: String) -> Result<(), Strin
 }
 
 #[tauri::command]
-async fn get_binary_path(state: State<'_, AppState>) -> Result<Option<String>, String> {
+async fn get_custom_binary_path(state: State<'_, AppState>) -> Result<Option<String>, String> {
     let settings = state.app_settings.lock().await;
     Ok(settings.binary_path.clone())
 }
 
 #[tauri::command]
-async fn set_binary_path(state: State<'_, AppState>, path: Option<String>) -> Result<(), String> {
+async fn set_custom_binary_path(state: State<'_, AppState>, path: Option<String>) -> Result<(), String> {
     // Persist to settings first to ensure consistency
     {
         let mut settings = state.app_settings.lock().await;
@@ -211,8 +211,13 @@ async fn set_binary_path(state: State<'_, AppState>, path: Option<String>) -> Re
         settings.save()?;
     }
     // Only update process manager if persistence succeeded
-    state.process_manager.set_binary_path(path).await;
+    state.process_manager.set_custom_binary_path(path).await;
     Ok(())
+}
+
+#[tauri::command]
+async fn is_using_bundled_binary(state: State<'_, AppState>) -> Result<bool, String> {
+    Ok(state.process_manager.is_using_bundled().await)
 }
 
 // ============================================================================
@@ -283,6 +288,7 @@ pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_shell::init())
         .manage(AppState::new())
         .invoke_handler(tauri::generate_handler![
             // Config commands
@@ -297,8 +303,9 @@ pub fn run() {
             get_instance,
             start_tunnel,
             stop_tunnel,
-            get_binary_path,
-            set_binary_path,
+            get_custom_binary_path,
+            set_custom_binary_path,
+            is_using_bundled_binary,
         ])
         .setup(|app| {
             // Set up system tray
@@ -317,11 +324,15 @@ pub fn run() {
 
             // Apply saved settings and emit startup events
             if let Some(state) = app.try_state::<AppState>() {
-                // Apply saved binary path to process manager
+                // Set app handle for sidecar spawning and apply saved custom binary path
+                let app_handle = app.handle().clone();
                 tauri::async_runtime::block_on(async {
+                    state.process_manager.set_app_handle(app_handle).await;
+
+                    // Apply saved custom binary path if set
                     let binary_path = state.app_settings.lock().await.binary_path.clone();
                     if let Some(path) = binary_path {
-                        state.process_manager.set_binary_path(Some(path)).await;
+                        state.process_manager.set_custom_binary_path(Some(path)).await;
                     }
                 });
 

@@ -10,7 +10,7 @@ type View = 'list' | 'create' | 'edit';
 function App() {
   const { configs, loading: configsLoading, createConfig, updateConfig, deleteConfig } = useTunnelConfigs();
   const { instances, startTunnel, stopTunnel, getInstance, loading: instancesLoading } = useTunnelInstances();
-  const { binaryPath, selectBinaryPath, clearBinaryPath } = useBinaryPath();
+  const { customBinaryPath, isUsingBundled, selectCustomBinaryPath, useBundledBinary } = useBinaryPath();
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [view, setView] = useState<View>('list');
@@ -87,21 +87,21 @@ function App() {
     }
   }, [stopTunnel]);
 
-  const handleSelectBinaryPath = useCallback(async () => {
+  const handleSelectCustomBinaryPath = useCallback(async () => {
     try {
-      await selectBinaryPath();
+      await selectCustomBinaryPath();
     } catch (e) {
-      alert(`Failed to set binary path: ${e instanceof Error ? e.message : e}`);
+      alert(`Failed to set custom binary path: ${e instanceof Error ? e.message : e}`);
     }
-  }, [selectBinaryPath]);
+  }, [selectCustomBinaryPath]);
 
-  const handleClearBinaryPath = useCallback(async () => {
+  const handleUseBundledBinary = useCallback(async () => {
     try {
-      await clearBinaryPath();
+      await useBundledBinary();
     } catch (e) {
-      alert(`Failed to clear binary path: ${e instanceof Error ? e.message : e}`);
+      alert(`Failed to switch to bundled binary: ${e instanceof Error ? e.message : e}`);
     }
-  }, [clearBinaryPath]);
+  }, [useBundledBinary]);
 
   return (
     <div className="app">
@@ -143,24 +143,24 @@ function App() {
                 {' '}{instances.filter(i => i.status === 'running').length} running
               </p>
               <div className="binary-path-row">
-                <span className="binary-path-info" title={binaryPath || 'Auto-detect'}>
-                  Binary: {binaryPath ? binaryPath : 'Auto-detect'}
+                <span className="binary-path-info" title={isUsingBundled ? 'Bundled' : (customBinaryPath ?? 'Not set')}>
+                  Binary: {isUsingBundled ? 'Bundled' : (customBinaryPath ?? 'Not set')}
                 </span>
                 <div className="binary-path-actions">
                   <button
                     className="btn-small"
-                    onClick={handleSelectBinaryPath}
-                    title="Select binary path"
+                    onClick={handleSelectCustomBinaryPath}
+                    title="Select custom binary path"
                   >
-                    {binaryPath ? 'Change' : 'Set Path'}
+                    Use Custom
                   </button>
-                  {binaryPath && (
+                  {!isUsingBundled && (
                     <button
                       className="btn-small btn-secondary"
-                      onClick={handleClearBinaryPath}
-                      title="Clear custom path and use auto-detect"
+                      onClick={handleUseBundledBinary}
+                      title="Switch to bundled binary"
                     >
-                      Clear
+                      Use Bundled
                     </button>
                   )}
                 </div>
