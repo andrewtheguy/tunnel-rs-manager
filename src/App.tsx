@@ -143,8 +143,8 @@ function App() {
                 {' '}{instances.filter(i => i.status === 'running').length} running
               </p>
               <div className="binary-path-row">
-                <span className="binary-path-info" title={customBinaryPath || 'Bundled'}>
-                  Binary: {isUsingBundled ? 'Bundled' : customBinaryPath}
+                <span className="binary-path-info" title={isUsingBundled ? 'Bundled' : (customBinaryPath ?? 'Not set')}>
+                  Binary: {isUsingBundled ? 'Bundled' : (customBinaryPath ?? 'Not set')}
                 </span>
                 <div className="binary-path-actions">
                   <button

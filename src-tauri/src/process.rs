@@ -238,6 +238,28 @@ impl ProcessManager {
         }
     }
 
+    /// Clean up a failed instance: set error status, log message, remove temp config, remove from map
+    async fn cleanup_failed_instance(
+        &self,
+        instance: &Arc<Mutex<TunnelInstance>>,
+        id: Uuid,
+        error_msg: &str,
+    ) {
+        {
+            let mut guard = instance.lock().await;
+            guard.status = TunnelStatus::Error;
+            guard.add_log(error_msg.to_string(), true);
+            if let Some(ref path) = guard.temp_config_path {
+                if let Err(del_err) = std::fs::remove_file(path) {
+                    guard.add_log(format!("Failed to delete temp config: {}", del_err), true);
+                }
+            }
+            guard.temp_config_path = None;
+        }
+        let mut instances = self.instances.write().await;
+        instances.remove(&id);
+    }
+
     /// Start tunnel using custom binary path
     async fn start_with_custom_binary(
         &self,
@@ -249,17 +271,7 @@ impl ProcessManager {
         // Verify binary exists
         if !std::path::Path::new(binary_path).exists() {
             let error_msg = format!("Custom binary path '{}' does not exist", binary_path);
-            {
-                let mut guard = instance.lock().await;
-                guard.status = TunnelStatus::Error;
-                guard.add_log(error_msg.clone(), true);
-                if let Err(del_err) = std::fs::remove_file(config_path) {
-                    guard.add_log(format!("Failed to delete temp config: {}", del_err), true);
-                }
-                guard.temp_config_path = None;
-            }
-            let mut instances = self.instances.write().await;
-            instances.remove(&id);
+            self.cleanup_failed_instance(instance, id, &error_msg).await;
             return Err(error_msg);
         }
 
@@ -275,18 +287,9 @@ impl ProcessManager {
         let mut child = match child {
             Ok(c) => c,
             Err(e) => {
-                {
-                    let mut guard = instance.lock().await;
-                    guard.status = TunnelStatus::Error;
-                    guard.add_log(format!("Failed to spawn tunnel-rs: {}", e), true);
-                    if let Err(del_err) = std::fs::remove_file(config_path) {
-                        guard.add_log(format!("Failed to delete temp config: {}", del_err), true);
-                    }
-                    guard.temp_config_path = None;
-                }
-                let mut instances = self.instances.write().await;
-                instances.remove(&id);
-                return Err(format!("Failed to spawn tunnel-rs: {}", e));
+                let error_msg = format!("Failed to spawn tunnel-rs: {}", e);
+                self.cleanup_failed_instance(instance, id, &error_msg).await;
+                return Err(error_msg);
             }
         };
 
@@ -340,11 +343,14 @@ impl ProcessManager {
                 if let Some(ChildProcess::Tokio(ref mut child)) = guard.child {
                     match child.try_wait() {
                         Ok(Some(status)) => {
-                            guard.status = if status.success() {
-                                TunnelStatus::Stopped
-                            } else {
-                                TunnelStatus::Error
-                            };
+                            // Preserve Stopped status if already set by stop()
+                            if !matches!(guard.status, TunnelStatus::Stopped) {
+                                guard.status = if status.success() {
+                                    TunnelStatus::Stopped
+                                } else {
+                                    TunnelStatus::Error
+                                };
+                            }
                             guard.add_log(
                                 format!("Process exited with status: {}", status),
                                 !status.success(),
@@ -379,27 +385,35 @@ impl ProcessManager {
     async fn start_with_sidecar(
         &self,
         instance: &Arc<Mutex<TunnelInstance>>,
-        _id: Uuid,
+        id: Uuid,
         config_path: &std::path::Path,
     ) -> Result<(), String> {
-        let app_handle = {
-            let handle = self.app_handle.read().await;
-            handle.clone().ok_or_else(|| "App handle not set".to_string())?
+        let app_handle = match self.app_handle.read().await.clone() {
+            Some(handle) => handle,
+            None => {
+                let error_msg = "App handle not set";
+                self.cleanup_failed_instance(instance, id, error_msg).await;
+                return Err(error_msg.to_string());
+            }
         };
 
-        let sidecar_command = app_handle
-            .shell()
-            .sidecar("tunnel-rs")
-            .map_err(|e| format!("Failed to create sidecar command: {}", e))?
-            .args(["client", "-c", &config_path.to_string_lossy()]);
+        let sidecar_command = match app_handle.shell().sidecar("tunnel-rs") {
+            Ok(cmd) => cmd.args(["client", "-c", &config_path.to_string_lossy()]),
+            Err(e) => {
+                let error_msg = format!("Failed to create sidecar command: {}", e);
+                self.cleanup_failed_instance(instance, id, &error_msg).await;
+                return Err(error_msg);
+            }
+        };
 
-        let (mut rx, child) = sidecar_command
-            .spawn()
-            .map_err(|e| {
-                // Clean up temp config on spawn failure
-                let _ = std::fs::remove_file(config_path);
-                format!("Failed to spawn sidecar: {}", e)
-            })?;
+        let (mut rx, child) = match sidecar_command.spawn() {
+            Ok(result) => result,
+            Err(e) => {
+                let error_msg = format!("Failed to spawn sidecar: {}", e);
+                self.cleanup_failed_instance(instance, id, &error_msg).await;
+                return Err(error_msg);
+            }
+        };
 
         {
             let mut guard = instance.lock().await;
@@ -429,17 +443,21 @@ impl ProcessManager {
                         guard.add_log(String::from_utf8_lossy(&line).to_string(), true);
                     }
                     CommandEvent::Terminated(payload) => {
-                        let success = payload.code == Some(0);
-                        guard.status = if success {
-                            TunnelStatus::Stopped
-                        } else {
-                            TunnelStatus::Error
-                        };
+                        // Preserve Stopped status if already set by stop()
+                        if !matches!(guard.status, TunnelStatus::Stopped) {
+                            let success = payload.code == Some(0);
+                            guard.status = if success {
+                                TunnelStatus::Stopped
+                            } else {
+                                TunnelStatus::Error
+                            };
+                        }
                         let exit_msg = match payload.code {
                             Some(code) => format!("Process exited with code: {}", code),
                             None => "Process terminated by signal".to_string(),
                         };
-                        guard.add_log(exit_msg, !success);
+                        let is_error = payload.code != Some(0);
+                        guard.add_log(exit_msg, is_error);
                         guard.child = None;
 
                         // Clean up temp config
