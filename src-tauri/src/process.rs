@@ -219,11 +219,17 @@ impl ProcessManager {
         let mut child = match child {
             Ok(c) => c,
             Err(e) => {
-                // Clean up: set error status and remove from instances on spawn failure
+                // Clean up: delete temp config file, set error status, remove from instances
                 {
                     let mut guard = instance.lock().await;
                     guard.status = TunnelStatus::Error;
                     guard.add_log(format!("Failed to spawn tunnel-rs: {}", e), true);
+
+                    // Clean up temp config file
+                    if let Err(del_err) = std::fs::remove_file(&config_path) {
+                        guard.add_log(format!("Failed to delete temp config: {}", del_err), true);
+                    }
+                    guard.temp_config_path = None;
                 }
                 let mut instances = self.instances.write().await;
                 instances.remove(&id);
