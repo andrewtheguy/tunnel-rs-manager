@@ -212,8 +212,12 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             match event.id.as_ref() {
                 "show" => {
                     if let Some(window) = app.get_webview_window("main") {
-                        let _ = window.show();
-                        let _ = window.set_focus();
+                        if let Err(e) = window.show() {
+                            tracing::trace!("failed to show main window: {}", e);
+                        }
+                        if let Err(e) = window.set_focus() {
+                            tracing::trace!("failed to set focus on main window: {}", e);
+                        }
                     }
                 }
                 "quit" => {
@@ -231,8 +235,12 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             {
                 let app = tray.app_handle();
                 if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.show();
-                    let _ = window.set_focus();
+                    if let Err(e) = window.show() {
+                        tracing::trace!("failed to show main window: {}", e);
+                    }
+                    if let Err(e) = window.set_focus() {
+                        tracing::trace!("failed to set focus on main window: {}", e);
+                    }
                 }
             }
         })
