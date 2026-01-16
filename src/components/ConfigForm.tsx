@@ -1,8 +1,77 @@
 // Config edit/create form component
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import type { ConfigFormData } from '../types';
 import './ConfigForm.css';
+
+// Valid characters for auth token body: A-Za-z0-9 and -_.
+const TOKEN_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.';
+
+function charToIndex(c: string): number {
+    const idx = TOKEN_ALPHABET.indexOf(c);
+    return idx;
+}
+
+function luhnModNChecksum(body: string): string {
+    const n = TOKEN_ALPHABET.length; // 65
+    let factor = 2;
+    let sum = 0;
+
+    // Process characters from right to left
+    for (let i = body.length - 1; i >= 0; i--) {
+        const codePoint = charToIndex(body[i]);
+        if (codePoint === -1) {
+            return ''; // Invalid character
+        }
+        let addend = factor * codePoint;
+        factor = factor === 2 ? 1 : 2;
+        addend = Math.floor(addend / n) + (addend % n);
+        sum += addend;
+    }
+
+    const remainder = sum % n;
+    const checkCodePoint = (n - remainder) % n;
+    return TOKEN_ALPHABET[checkCodePoint];
+}
+
+function validateAuthToken(token: string): string | null {
+    // Empty token is valid (optional field)
+    if (!token) {
+        return null;
+    }
+
+    // Must be exactly 18 characters
+    if (token.length !== 18) {
+        return `Token must be exactly 18 characters (got ${token.length})`;
+    }
+
+    // Must start with 'i'
+    if (token[0] !== 'i') {
+        return "Token must start with 'i'";
+    }
+
+    // Body is characters 1-16 (indices 1..17)
+    const body = token.slice(1, 17);
+
+    // Validate body characters
+    for (const c of body) {
+        if (charToIndex(c) === -1) {
+            return `Invalid character '${c}' in token body`;
+        }
+    }
+
+    // Validate checksum (last character)
+    const expectedChecksum = luhnModNChecksum(body);
+    if (!expectedChecksum) {
+        return 'Token contains invalid characters';
+    }
+
+    if (token[17] !== expectedChecksum) {
+        return 'Invalid token checksum';
+    }
+
+    return null;
+}
 
 interface ConfigFormProps {
     initial?: ConfigFormData;
@@ -22,6 +91,11 @@ export function ConfigForm({ initial, onSubmit, onCancel, isEditing = false }: C
     });
     const [submitting, setSubmitting] = useState(false);
     const [error, setError] = useState<string | null>(null);
+
+    const authTokenError = useMemo(
+        () => validateAuthToken(form.auth_token),
+        [form.auth_token]
+    );
 
     useEffect(() => {
         if (initial) {
@@ -46,6 +120,10 @@ export function ConfigForm({ initial, onSubmit, onCancel, isEditing = false }: C
         }
         if (!form.server_node_id.trim()) {
             setError('Server Node ID is required');
+            return;
+        }
+        if (authTokenError) {
+            setError(authTokenError);
             return;
         }
 
@@ -127,8 +205,13 @@ export function ConfigForm({ initial, onSubmit, onCancel, isEditing = false }: C
                         value={form.auth_token}
                         onChange={handleChange('auth_token')}
                         placeholder="iXXXXXXXXXXXXXXXXX"
+                        className={authTokenError ? 'input-error' : ''}
                     />
-                    <span className="help-text">18-character token from server admin</span>
+                    {authTokenError ? (
+                        <span className="field-error">{authTokenError}</span>
+                    ) : (
+                        <span className="help-text">18-character token from server admin</span>
+                    )}
                 </div>
 
                 <div className="form-group">

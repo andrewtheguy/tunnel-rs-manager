@@ -1,6 +1,6 @@
 // React hooks for tunnel config management via Tauri
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import type { StoredConfig, ConfigFormData } from '../types';
 
@@ -18,6 +18,20 @@ export function useTunnelConfigs() {
     const [loading, setLoading] = useState(true);
     const [mutating, setMutating] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const mutationCountRef = useRef(0);
+
+    const startMutation = useCallback(() => {
+        mutationCountRef.current += 1;
+        setMutating(true);
+    }, []);
+
+    const endMutation = useCallback(() => {
+        mutationCountRef.current -= 1;
+        if (mutationCountRef.current <= 0) {
+            mutationCountRef.current = 0; // Clamp to prevent negative
+            setMutating(false);
+        }
+    }, []);
 
     const refresh = useCallback(async () => {
         try {
@@ -37,7 +51,7 @@ export function useTunnelConfigs() {
     }, [refresh]);
 
     const createConfig = useCallback(async (form: ConfigFormData): Promise<StoredConfig> => {
-        setMutating(true);
+        startMutation();
         try {
             const config = await invoke<StoredConfig>('create_config', {
                 name: form.name,
@@ -56,12 +70,12 @@ export function useTunnelConfigs() {
             setError(`Failed to create config: ${message}`);
             throw e;
         } finally {
-            setMutating(false);
+            endMutation();
         }
-    }, [refresh]);
+    }, [refresh, startMutation, endMutation]);
 
     const updateConfig = useCallback(async (id: string, form: ConfigFormData): Promise<StoredConfig> => {
-        setMutating(true);
+        startMutation();
         try {
             const config = await invoke<StoredConfig>('update_config', {
                 id,
@@ -81,12 +95,12 @@ export function useTunnelConfigs() {
             setError(`Failed to update config: ${message}`);
             throw e;
         } finally {
-            setMutating(false);
+            endMutation();
         }
-    }, [refresh]);
+    }, [refresh, startMutation, endMutation]);
 
     const deleteConfig = useCallback(async (id: string): Promise<void> => {
-        setMutating(true);
+        startMutation();
         try {
             await invoke('delete_config', { id });
             setError(null);
@@ -96,9 +110,9 @@ export function useTunnelConfigs() {
             setError(`Failed to delete config: ${message}`);
             throw e;
         } finally {
-            setMutating(false);
+            endMutation();
         }
-    }, [refresh]);
+    }, [refresh, startMutation, endMutation]);
 
     return {
         configs,

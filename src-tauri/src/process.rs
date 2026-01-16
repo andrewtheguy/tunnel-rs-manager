@@ -184,19 +184,27 @@ impl ProcessManager {
         let toml_content = match config.config.to_toml() {
             Ok(content) => content,
             Err(e) => {
-                // Clean up: set error status on failure
-                let mut guard = instance.lock().await;
-                guard.status = TunnelStatus::Error;
-                guard.add_log(format!("Failed to serialize config: {}", e), true);
+                // Clean up: set error status, remove from instances
+                {
+                    let mut guard = instance.lock().await;
+                    guard.status = TunnelStatus::Error;
+                    guard.add_log(format!("Failed to serialize config: {}", e), true);
+                }
+                let mut instances = self.instances.write().await;
+                instances.remove(&id);
                 return Err(format!("Failed to serialize config: {}", e));
             }
         };
 
         if let Err(e) = std::fs::write(&config_path, &toml_content) {
-            // Clean up: set error status on failure
-            let mut guard = instance.lock().await;
-            guard.status = TunnelStatus::Error;
-            guard.add_log(format!("Failed to write temp config: {}", e), true);
+            // Clean up: set error status, remove from instances
+            {
+                let mut guard = instance.lock().await;
+                guard.status = TunnelStatus::Error;
+                guard.add_log(format!("Failed to write temp config: {}", e), true);
+            }
+            let mut instances = self.instances.write().await;
+            instances.remove(&id);
             return Err(format!("Failed to write temp config: {}", e));
         }
 
