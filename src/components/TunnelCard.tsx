@@ -51,10 +51,10 @@ export function TunnelCard({
                             {config.config.iroh.target || <em className="empty">Not set</em>}
                         </span>
                     </div>
-                    {config.config.iroh.relay_urls.length > 0 && (
+                    {(config.config.iroh.relay_urls?.length ?? 0) > 0 && (
                         <div className="detail-row">
                             <span className="detail-label">Relays</span>
-                            <span className="detail-value">{config.config.iroh.relay_urls.length} configured</span>
+                            <span className="detail-value">{config.config.iroh.relay_urls!.length} configured</span>
                         </div>
                     )}
                 </div>

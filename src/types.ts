@@ -4,7 +4,7 @@ export interface IrohConfig {
   server_node_id: string;
   request_source?: string;
   target?: string;
-  relay_urls: string[];
+  relay_urls?: string[];
   dns_server?: string;
   socks5_proxy?: string;
   auth_token?: string;
@@ -71,6 +71,6 @@ export function storedConfigToForm(config: StoredConfig): ConfigFormData {
     source: config.config.iroh.request_source || '',
     target: config.config.iroh.target || '',
     auth_token: config.config.iroh.auth_token || '',
-    relay_urls: config.config.iroh.relay_urls.join(', '),
+    relay_urls: config.config.iroh.relay_urls?.join(', ') ?? '',
   };
 }

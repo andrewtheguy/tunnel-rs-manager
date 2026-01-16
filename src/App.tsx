@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useMemo } from 'react';
 import { Sidebar, TunnelCard, ConfigForm } from './components';
 import { useTunnelConfigs, useTunnelInstances } from './hooks';
 import type { StoredConfig, ConfigFormData } from './types';
@@ -42,6 +42,11 @@ function App() {
     setView('list');
     setEditingConfig(null);
   }, []);
+
+  const editingFormData = useMemo(
+    () => editingConfig ? storedConfigToForm(editingConfig) : undefined,
+    [editingConfig]
+  );
 
   const handleDelete = useCallback(async (id: string) => {
     if (window.confirm('Are you sure you want to delete this configuration?')) {
@@ -88,10 +93,10 @@ function App() {
           </div>
         )}
 
-        {view === 'edit' && editingConfig && (
+        {view === 'edit' && editingFormData && (
           <div className="form-container">
             <ConfigForm
-              initial={storedConfigToForm(editingConfig)}
+              initial={editingFormData}
               onSubmit={handleEditSubmit}
               onCancel={handleCancel}
               isEditing
