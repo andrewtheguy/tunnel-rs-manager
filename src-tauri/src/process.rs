@@ -129,11 +129,6 @@ impl ProcessManager {
         *self.custom_binary_path.write().await = path;
     }
 
-    /// Get custom binary path
-    pub async fn get_custom_binary_path(&self) -> Option<String> {
-        self.custom_binary_path.read().await.clone()
-    }
-
     /// Check if using bundled binary
     pub async fn is_using_bundled(&self) -> bool {
         self.custom_binary_path.read().await.is_none()
