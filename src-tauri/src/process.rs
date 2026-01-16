@@ -149,12 +149,14 @@ impl ProcessManager {
     /// Start a tunnel with the given config
     pub async fn start(&self, config: &StoredConfig) -> Result<(), String> {
         let id = config.id;
-        
-        // Check if already running
-        {
-            let instances = self.instances.read().await;
-            if let Some(instance) = instances.get(&id) {
-                let guard = instance.lock().await;
+
+        // Create instance and insert atomically under write lock to prevent TOCTOU
+        let instance = {
+            let mut instances = self.instances.write().await;
+
+            // Check if already running while holding write lock
+            if let Some(existing) = instances.get(&id) {
+                let guard = existing.lock().await;
                 match guard.status {
                     TunnelStatus::Running | TunnelStatus::Starting => {
                         return Err("Tunnel is already running".to_string());
@@ -162,32 +164,42 @@ impl ProcessManager {
                     _ => {}
                 }
             }
-        }
 
-        // Create instance
-        let instance = Arc::new(Mutex::new(TunnelInstance::new(id, config.name.clone())));
-        
-        {
-            let mut guard = instance.lock().await;
-            guard.status = TunnelStatus::Starting;
-            guard.add_log("Starting tunnel...".to_string(), false);
-        }
-
-        // Insert into map
-        {
-            let mut instances = self.instances.write().await;
+            // Create and insert instance while still holding write lock
+            let instance = Arc::new(Mutex::new(TunnelInstance::new(id, config.name.clone())));
+            {
+                let mut guard = instance.lock().await;
+                guard.status = TunnelStatus::Starting;
+                guard.add_log("Starting tunnel...".to_string(), false);
+            }
             instances.insert(id, instance.clone());
-        }
+
+            instance
+            // Write lock released here
+        };
 
         // Write temp config file
         let temp_dir = std::env::temp_dir();
         let config_path = temp_dir.join(format!("tunnel-rs-{}.toml", id));
-        
-        let toml_content = config.config.to_toml()
-            .map_err(|e| format!("Failed to serialize config: {}", e))?;
-        
-        std::fs::write(&config_path, &toml_content)
-            .map_err(|e| format!("Failed to write temp config: {}", e))?;
+
+        let toml_content = match config.config.to_toml() {
+            Ok(content) => content,
+            Err(e) => {
+                // Clean up: set error status on failure
+                let mut guard = instance.lock().await;
+                guard.status = TunnelStatus::Error;
+                guard.add_log(format!("Failed to serialize config: {}", e), true);
+                return Err(format!("Failed to serialize config: {}", e));
+            }
+        };
+
+        if let Err(e) = std::fs::write(&config_path, &toml_content) {
+            // Clean up: set error status on failure
+            let mut guard = instance.lock().await;
+            guard.status = TunnelStatus::Error;
+            guard.add_log(format!("Failed to write temp config: {}", e), true);
+            return Err(format!("Failed to write temp config: {}", e));
+        }
 
         {
             let mut guard = instance.lock().await;
@@ -196,15 +208,29 @@ impl ProcessManager {
 
         // Spawn the process
         let binary = self.get_binary().await;
-        let mut child = Command::new(&binary)
+        let child = Command::new(&binary)
             .arg("client")
             .arg("-c")
             .arg(&config_path)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true)
-            .spawn()
-            .map_err(|e| format!("Failed to spawn tunnel-rs: {}", e))?;
+            .spawn();
+
+        let mut child = match child {
+            Ok(c) => c,
+            Err(e) => {
+                // Clean up: set error status and remove from instances on spawn failure
+                {
+                    let mut guard = instance.lock().await;
+                    guard.status = TunnelStatus::Error;
+                    guard.add_log(format!("Failed to spawn tunnel-rs: {}", e), true);
+                }
+                let mut instances = self.instances.write().await;
+                instances.remove(&id);
+                return Err(format!("Failed to spawn tunnel-rs: {}", e));
+            }
+        };
 
         // Take stdout/stderr for log capture
         let stdout = child.stdout.take();

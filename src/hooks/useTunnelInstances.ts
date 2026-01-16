@@ -35,7 +35,12 @@ export function useTunnelInstances() {
         setLoading(true);
         try {
             await invoke('start_tunnel', { id });
+            setError(null);
             await refresh();
+        } catch (e) {
+            const message = e instanceof Error ? e.message : String(e);
+            setError(`Failed to start tunnel: ${message}`);
+            throw e;
         } finally {
             setLoading(false);
         }
@@ -45,7 +50,12 @@ export function useTunnelInstances() {
         setLoading(true);
         try {
             await invoke('stop_tunnel', { id });
+            setError(null);
             await refresh();
+        } catch (e) {
+            const message = e instanceof Error ? e.message : String(e);
+            setError(`Failed to stop tunnel: ${message}`);
+            throw e;
         } finally {
             setLoading(false);
         }

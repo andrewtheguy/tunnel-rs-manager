@@ -94,7 +94,7 @@ export function TunnelCard({
                     <button
                         className="btn-icon"
                         onClick={onEdit}
-                        disabled={isRunning}
+                        disabled={isRunning || loading}
                         title="Edit configuration"
                     >
                         <EditIcon />
@@ -102,7 +102,7 @@ export function TunnelCard({
                     <button
                         className="btn-icon btn-danger"
                         onClick={onDelete}
-                        disabled={isRunning}
+                        disabled={isRunning || loading}
                         title="Delete configuration"
                     >
                         <TrashIcon />
