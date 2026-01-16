@@ -91,6 +91,13 @@ pub struct ConfigStore {
     pub configs: HashMap<Uuid, StoredConfig>,
 }
 
+/// Get the application data directory path
+fn app_data_dir() -> Result<PathBuf, String> {
+    let data_dir = dirs::data_dir()
+        .ok_or_else(|| "Could not find data directory".to_string())?;
+    Ok(data_dir.join("tunnel-rs-manager"))
+}
+
 /// App-wide settings (persisted)
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AppSettings {
@@ -100,10 +107,7 @@ pub struct AppSettings {
 impl AppSettings {
     /// Get the settings file path
     fn settings_path() -> Result<PathBuf, String> {
-        let data_dir = dirs::data_dir()
-            .ok_or_else(|| "Could not find data directory".to_string())?;
-        let app_dir = data_dir.join("tunnel-rs-manager");
-        Ok(app_dir.join("settings.json"))
+        Ok(app_data_dir()?.join("settings.json"))
     }
 
     /// Load settings from disk
@@ -135,10 +139,7 @@ impl AppSettings {
 impl ConfigStore {
     /// Get the config store file path
     fn store_path() -> Result<PathBuf, String> {
-        let data_dir = dirs::data_dir()
-            .ok_or_else(|| "Could not find data directory".to_string())?;
-        let app_dir = data_dir.join("tunnel-rs-manager");
-        Ok(app_dir.join("configs.json"))
+        Ok(app_data_dir()?.join("configs.json"))
     }
 
     /// Load config store from disk

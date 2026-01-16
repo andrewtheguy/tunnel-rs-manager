@@ -130,29 +130,37 @@ impl ProcessManager {
         // (macOS apps launched from Finder don't inherit shell PATH,
         //  and Windows apps need to check typical installation locations)
         let home = std::env::var("HOME")
-            .or_else(|_| std::env::var("USERPROFILE"))
-            .unwrap_or_default();
+            .ok()
+            .or_else(|| std::env::var("USERPROFILE").ok());
 
         #[cfg(target_os = "windows")]
         let common_paths = {
-            let local_app_data = std::env::var("LOCALAPPDATA").unwrap_or_default();
-            [
-                format!(r"{}\Programs\tunnel-rs\tunnel-rs.exe", local_app_data),
-                format!(r"{}\.local\bin\tunnel-rs.exe", home),
-                format!(r"{}\.cargo\bin\tunnel-rs.exe", home),
-                r"C:\Program Files\tunnel-rs\tunnel-rs.exe".to_string(),
-            ]
+            let local_app_data = std::env::var("LOCALAPPDATA").ok();
+            let mut paths = Vec::new();
+            if let Some(ref lad) = local_app_data {
+                paths.push(format!(r"{}\Programs\tunnel-rs\tunnel-rs.exe", lad));
+            }
+            if let Some(ref h) = home {
+                paths.push(format!(r"{}\.local\bin\tunnel-rs.exe", h));
+                paths.push(format!(r"{}\.cargo\bin\tunnel-rs.exe", h));
+            }
+            paths.push(r"C:\Program Files\tunnel-rs\tunnel-rs.exe".to_string());
+            paths
         };
 
         #[cfg(not(target_os = "windows"))]
-        let common_paths = [
-            format!("{}/.local/bin/tunnel-rs", home),
-            format!("{}/.cargo/bin/tunnel-rs", home),
-            format!("{}/bin/tunnel-rs", home),
-            "/usr/local/bin/tunnel-rs".to_string(),
-            "/opt/homebrew/bin/tunnel-rs".to_string(),
-            "/usr/bin/tunnel-rs".to_string(),
-        ];
+        let common_paths = {
+            let mut paths = Vec::new();
+            if let Some(ref h) = home {
+                paths.push(format!("{}/.local/bin/tunnel-rs", h));
+                paths.push(format!("{}/.cargo/bin/tunnel-rs", h));
+                paths.push(format!("{}/bin/tunnel-rs", h));
+            }
+            paths.push("/usr/local/bin/tunnel-rs".to_string());
+            paths.push("/opt/homebrew/bin/tunnel-rs".to_string());
+            paths.push("/usr/bin/tunnel-rs".to_string());
+            paths
+        };
 
         for path in &common_paths {
             if std::path::Path::new(path).exists() {
@@ -161,7 +169,7 @@ impl ProcessManager {
         }
 
         Err(format!(
-            "tunnel-rs binary not found. Please install it or set a custom path in settings. Searched: {}",
+            "tunnel-rs binary not found. Please install it or set a custom path. Searched: {}",
             common_paths.join(", ")
         ))
     }

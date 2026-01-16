@@ -204,12 +204,15 @@ async fn get_binary_path(state: State<'_, AppState>) -> Result<Option<String>, S
 
 #[tauri::command]
 async fn set_binary_path(state: State<'_, AppState>, path: Option<String>) -> Result<(), String> {
-    // Update process manager
-    state.process_manager.set_binary_path(path.clone()).await;
-    // Persist to settings
-    let mut settings = state.app_settings.lock().await;
-    settings.binary_path = path;
-    settings.save()
+    // Persist to settings first to ensure consistency
+    {
+        let mut settings = state.app_settings.lock().await;
+        settings.binary_path = path.clone();
+        settings.save()?;
+    }
+    // Only update process manager if persistence succeeded
+    state.process_manager.set_binary_path(path).await;
+    Ok(())
 }
 
 // ============================================================================
@@ -313,14 +316,12 @@ pub fn run() {
             // Apply saved settings and emit startup events
             if let Some(state) = app.try_state::<AppState>() {
                 // Apply saved binary path to process manager
-                let binary_path = tauri::async_runtime::block_on(async {
-                    state.app_settings.lock().await.binary_path.clone()
-                });
-                if let Some(path) = binary_path {
-                    tauri::async_runtime::block_on(async {
+                tauri::async_runtime::block_on(async {
+                    let binary_path = state.app_settings.lock().await.binary_path.clone();
+                    if let Some(path) = binary_path {
                         state.process_manager.set_binary_path(Some(path)).await;
-                    });
-                }
+                    }
+                });
 
                 // Emit config load error event if there was an error during startup
                 if let Some(ref error) = state.config_load_error {
