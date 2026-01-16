@@ -1,7 +1,7 @@
 //! Process management for tunnel-rs client instances
 
 use crate::config::StoredConfig;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::process::Stdio;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -33,7 +33,7 @@ pub struct TunnelInstance {
     pub config_name: String,
     pub status: TunnelStatus,
     pub child: Option<Child>,
-    pub logs: Vec<LogEntry>,
+    pub logs: VecDeque<LogEntry>,
     pub temp_config_path: Option<std::path::PathBuf>,
 }
 
@@ -44,7 +44,7 @@ impl TunnelInstance {
             config_name,
             status: TunnelStatus::Stopped,
             child: None,
-            logs: Vec::new(),
+            logs: VecDeque::new(),
             temp_config_path: None,
         }
     }
@@ -54,13 +54,13 @@ impl TunnelInstance {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        
-        // Keep last 500 log entries
+
+        // Keep last 500 log entries (O(1) pop_front with VecDeque)
         if self.logs.len() >= 500 {
-            self.logs.remove(0);
+            self.logs.pop_front();
         }
-        
-        self.logs.push(LogEntry {
+
+        self.logs.push_back(LogEntry {
             timestamp,
             message,
             is_error,
@@ -83,7 +83,7 @@ impl From<&TunnelInstance> for TunnelInstanceView {
             config_id: instance.config_id,
             config_name: instance.config_name.clone(),
             status: instance.status.clone(),
-            logs: instance.logs.clone(),
+            logs: instance.logs.iter().cloned().collect(),
         }
     }
 }
