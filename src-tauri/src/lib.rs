@@ -18,7 +18,13 @@ pub struct AppState {
 
 impl AppState {
     fn new() -> Self {
-        let config_store = ConfigStore::load().unwrap_or_default();
+        let config_store = match ConfigStore::load() {
+            Ok(store) => store,
+            Err(e) => {
+                tracing::error!("Failed to load config store: {}. Using default.", e);
+                ConfigStore::default()
+            }
+        };
         Self {
             config_store: Mutex::new(config_store),
             process_manager: Arc::new(ProcessManager::new()),

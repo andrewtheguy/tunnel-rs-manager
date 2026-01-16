@@ -34,9 +34,9 @@ export function useTunnelInstances() {
 
     const startTunnel = useCallback(async (id: string): Promise<void> => {
         setLoading(true);
+        setError(null);
         try {
             await invoke('start_tunnel', { id });
-            setError(null);
             await refresh();
         } catch (e) {
             const message = e instanceof Error ? e.message : String(e);
@@ -49,9 +49,9 @@ export function useTunnelInstances() {
 
     const stopTunnel = useCallback(async (id: string): Promise<void> => {
         setLoading(true);
+        setError(null);
         try {
             await invoke('stop_tunnel', { id });
-            setError(null);
             await refresh();
         } catch (e) {
             const message = e instanceof Error ? e.message : String(e);
