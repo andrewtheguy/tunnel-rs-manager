@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tauri::{
     Emitter, Manager, State,
-    menu::{Menu, MenuItem},
+    menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     WindowEvent,
 };
@@ -22,7 +22,7 @@ static SHUTDOWN_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 /// Application state shared across commands
 pub struct AppState {
     config_store: Mutex<ConfigStore>,
-    app_settings: Mutex<AppSettings>,
+    app_settings: Arc<Mutex<AppSettings>>,
     process_manager: Arc<ProcessManager>,
     config_load_error: Option<String>,
 }
@@ -48,7 +48,7 @@ impl AppState {
 
         Self {
             config_store: Mutex::new(config_store),
-            app_settings: Mutex::new(app_settings),
+            app_settings: Arc::new(Mutex::new(app_settings)),
             process_manager: Arc::new(ProcessManager::new()),
             config_load_error,
         }
@@ -221,8 +221,9 @@ async fn set_binary_path(state: State<'_, AppState>, path: Option<String>) -> Re
 
 fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let show_item = MenuItem::with_id(app, "show", "Show", true, None::<&str>)?;
+    let separator = PredefinedMenuItem::separator(app)?;
     let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
+    let menu = Menu::with_items(app, &[&show_item, &separator, &quit_item])?;
 
     // Use high-contrast tray icon for macOS menu bar (44x44 for retina)
     let tray_icon = tauri::image::Image::from_bytes(include_bytes!("../icons/tray@2x.png"))?;
@@ -281,6 +282,7 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(AppState::new())
         .invoke_handler(tauri::generate_handler![
             // Config commands

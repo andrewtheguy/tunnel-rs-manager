@@ -87,20 +87,13 @@ bun run tauri build
 
 ### Custom Binary Path
 
-If `tunnel-rs` is installed in a non-standard location, you can set a custom path using the Tauri `invoke` API from the browser developer console (open with F12 or Cmd+Option+I):
+If `tunnel-rs` is installed in a non-standard location, you can set a custom path from the main window:
 
-```javascript
-// Set a custom binary path
-await window.__TAURI__.core.invoke('set_binary_path', { path: '/path/to/tunnel-rs' });
+1. Look for the "Binary:" row in the header showing the current path (or "Auto-detect")
+2. Click **Set Path** to open a file browser and select your `tunnel-rs` binary
+3. The path is saved and persisted across app restarts
 
-// Clear the custom path (revert to auto-detection)
-await window.__TAURI__.core.invoke('set_binary_path', { path: null });
-
-// Get the current custom path
-await window.__TAURI__.core.invoke('get_binary_path');
-```
-
-The setting is persisted across app restarts.
+To revert to auto-detection, click **Clear** next to the binary path.
 
 ## Data Storage
 
