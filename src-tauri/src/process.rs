@@ -268,11 +268,22 @@ impl ProcessManager {
         binary_path: &str,
         config_path: &std::path::Path,
     ) -> Result<(), String> {
-        // Verify binary exists
-        if !std::path::Path::new(binary_path).exists() {
-            let error_msg = format!("Custom binary path '{}' does not exist", binary_path);
-            self.cleanup_failed_instance(instance, id, &error_msg).await;
-            return Err(error_msg);
+        // Verify binary exists (async)
+        match tokio::fs::try_exists(binary_path).await {
+            Ok(true) => {} // Binary exists, continue
+            Ok(false) => {
+                let error_msg = format!("Custom binary path '{}' does not exist", binary_path);
+                self.cleanup_failed_instance(instance, id, &error_msg).await;
+                return Err(error_msg);
+            }
+            Err(e) => {
+                let error_msg = format!(
+                    "Failed to check if custom binary path '{}' exists: {}",
+                    binary_path, e
+                );
+                self.cleanup_failed_instance(instance, id, &error_msg).await;
+                return Err(error_msg);
+            }
         }
 
         let child = tokio::process::Command::new(binary_path)
