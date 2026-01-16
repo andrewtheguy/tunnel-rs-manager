@@ -87,6 +87,22 @@ function App() {
     }
   }, [stopTunnel]);
 
+  const handleSelectBinaryPath = useCallback(async () => {
+    try {
+      await selectBinaryPath();
+    } catch (e) {
+      alert(`Failed to set binary path: ${e instanceof Error ? e.message : e}`);
+    }
+  }, [selectBinaryPath]);
+
+  const handleClearBinaryPath = useCallback(async () => {
+    try {
+      await clearBinaryPath();
+    } catch (e) {
+      alert(`Failed to clear binary path: ${e instanceof Error ? e.message : e}`);
+    }
+  }, [clearBinaryPath]);
+
   return (
     <div className="app">
       <Sidebar
@@ -133,7 +149,7 @@ function App() {
                 <div className="binary-path-actions">
                   <button
                     className="btn-small"
-                    onClick={selectBinaryPath}
+                    onClick={handleSelectBinaryPath}
                     title="Select binary path"
                   >
                     {binaryPath ? 'Change' : 'Set Path'}
@@ -141,7 +157,7 @@ function App() {
                   {binaryPath && (
                     <button
                       className="btn-small btn-secondary"
-                      onClick={clearBinaryPath}
+                      onClick={handleClearBinaryPath}
                       title="Clear custom path and use auto-detect"
                     >
                       Clear

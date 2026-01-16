@@ -22,7 +22,7 @@ static SHUTDOWN_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 /// Application state shared across commands
 pub struct AppState {
     config_store: Mutex<ConfigStore>,
-    app_settings: Arc<Mutex<AppSettings>>,
+    app_settings: Mutex<AppSettings>,
     process_manager: Arc<ProcessManager>,
     config_load_error: Option<String>,
 }
@@ -48,7 +48,7 @@ impl AppState {
 
         Self {
             config_store: Mutex::new(config_store),
-            app_settings: Arc::new(Mutex::new(app_settings)),
+            app_settings: Mutex::new(app_settings),
             process_manager: Arc::new(ProcessManager::new()),
             config_load_error,
         }
