@@ -26,17 +26,25 @@ function App() {
   }, []);
 
   const handleCreateSubmit = useCallback(async (form: ConfigFormData) => {
-    await createConfig(form);
-    setView('list');
+    try {
+      await createConfig(form);
+      setView('list');
+    } catch (e) {
+      alert(`Failed to create configuration: ${e instanceof Error ? e.message : e}`);
+    }
   }, [createConfig]);
 
   const handleEditSubmit = useCallback(async (form: ConfigFormData) => {
     if (!editingConfig) {
       throw new Error('No editing config selected');
     }
-    await updateConfig(editingConfig.id, form);
-    setView('list');
-    setEditingConfig(null);
+    try {
+      await updateConfig(editingConfig.id, form);
+      setView('list');
+      setEditingConfig(null);
+    } catch (e) {
+      alert(`Failed to update configuration: ${e instanceof Error ? e.message : e}`);
+    }
   }, [editingConfig, updateConfig]);
 
   const handleCancel = useCallback(() => {

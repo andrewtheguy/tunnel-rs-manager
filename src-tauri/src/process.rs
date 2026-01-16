@@ -74,7 +74,7 @@ pub struct TunnelInstanceView {
     pub config_id: Uuid,
     pub config_name: String,
     pub status: TunnelStatus,
-    pub logs: Vec<LogEntry>,
+    pub logs: VecDeque<LogEntry>,
 }
 
 impl From<&TunnelInstance> for TunnelInstanceView {
@@ -83,7 +83,7 @@ impl From<&TunnelInstance> for TunnelInstanceView {
             config_id: instance.config_id,
             config_name: instance.config_name.clone(),
             status: instance.status.clone(),
-            logs: instance.logs.iter().cloned().collect(),
+            logs: instance.logs.clone(),
         }
     }
 }

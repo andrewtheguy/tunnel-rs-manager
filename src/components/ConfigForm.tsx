@@ -62,10 +62,6 @@ function validateAuthToken(token: string): string | null {
 
     // Validate checksum (last character)
     const expectedChecksum = luhnModNChecksum(body);
-    if (!expectedChecksum) {
-        return 'Token contains invalid characters';
-    }
-
     if (token[17] !== expectedChecksum) {
         return 'Invalid token checksum';
     }
