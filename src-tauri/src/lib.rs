@@ -3,7 +3,7 @@
 mod config;
 mod process;
 
-use config::{ConfigStore, StoredConfig, TunnelClientConfig, IrohConfig};
+use config::{ConfigStore, StoredConfig, TunnelClientConfig};
 use process::{ProcessManager, TunnelInstanceView};
 use std::sync::Arc;
 use tauri::State;

@@ -1,13 +1,12 @@
 //! Process management for tunnel-rs client instances
 
-use crate::config::{StoredConfig, TunnelClientConfig};
+use crate::config::StoredConfig;
 use std::collections::HashMap;
-use std::io::Write;
 use std::process::Stdio;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
-use tokio::sync::{mpsc, Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
 /// Status of a tunnel instance
@@ -334,7 +333,8 @@ impl ProcessManager {
         }
     }
 
-    /// Stop all running tunnels
+    /// Stop all running tunnels (reserved for future graceful shutdown)
+    #[allow(dead_code)]
     pub async fn stop_all(&self) {
         let instances = self.instances.read().await;
         for (id, _) in instances.iter() {
