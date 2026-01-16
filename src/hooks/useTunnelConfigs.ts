@@ -16,6 +16,7 @@ function parseRelayUrls(input: string): string[] | null {
 export function useTunnelConfigs() {
     const [configs, setConfigs] = useState<StoredConfig[]>([]);
     const [loading, setLoading] = useState(true);
+    const [mutating, setMutating] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
     const refresh = useCallback(async () => {
@@ -36,6 +37,7 @@ export function useTunnelConfigs() {
     }, [refresh]);
 
     const createConfig = useCallback(async (form: ConfigFormData): Promise<StoredConfig> => {
+        setMutating(true);
         try {
             const config = await invoke<StoredConfig>('create_config', {
                 name: form.name,
@@ -53,10 +55,13 @@ export function useTunnelConfigs() {
             const message = e instanceof Error ? e.message : String(e);
             setError(`Failed to create config: ${message}`);
             throw e;
+        } finally {
+            setMutating(false);
         }
     }, [refresh]);
 
     const updateConfig = useCallback(async (id: string, form: ConfigFormData): Promise<StoredConfig> => {
+        setMutating(true);
         try {
             const config = await invoke<StoredConfig>('update_config', {
                 id,
@@ -75,10 +80,13 @@ export function useTunnelConfigs() {
             const message = e instanceof Error ? e.message : String(e);
             setError(`Failed to update config: ${message}`);
             throw e;
+        } finally {
+            setMutating(false);
         }
     }, [refresh]);
 
     const deleteConfig = useCallback(async (id: string): Promise<void> => {
+        setMutating(true);
         try {
             await invoke('delete_config', { id });
             setError(null);
@@ -87,12 +95,15 @@ export function useTunnelConfigs() {
             const message = e instanceof Error ? e.message : String(e);
             setError(`Failed to delete config: ${message}`);
             throw e;
+        } finally {
+            setMutating(false);
         }
     }, [refresh]);
 
     return {
         configs,
         loading,
+        mutating,
         error,
         refresh,
         createConfig,
