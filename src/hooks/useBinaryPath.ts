@@ -3,14 +3,19 @@ import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 
 export function useBinaryPath() {
-  const [binaryPath, setBinaryPath] = useState<string | null>(null);
+  const [customBinaryPath, setCustomBinaryPath] = useState<string | null>(null);
+  const [isUsingBundled, setIsUsingBundled] = useState(true);
   const [loading, setLoading] = useState(true);
 
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const path = await invoke<string | null>('get_binary_path');
-      setBinaryPath(path);
+      const [path, bundled] = await Promise.all([
+        invoke<string | null>('get_custom_binary_path'),
+        invoke<boolean>('is_using_bundled_binary'),
+      ]);
+      setCustomBinaryPath(path);
+      setIsUsingBundled(bundled);
     } catch (e) {
       console.error('Failed to get binary path:', e);
     } finally {
@@ -22,7 +27,7 @@ export function useBinaryPath() {
     refresh();
   }, [refresh]);
 
-  const selectBinaryPath = useCallback(async () => {
+  const selectCustomBinaryPath = useCallback(async () => {
     try {
       const selected = await open({
         multiple: false,
@@ -30,24 +35,33 @@ export function useBinaryPath() {
         title: 'Select tunnel-rs Binary',
       });
       if (selected && typeof selected === 'string') {
-        await invoke('set_binary_path', { path: selected });
-        setBinaryPath(selected);
+        await invoke('set_custom_binary_path', { path: selected });
+        setCustomBinaryPath(selected);
+        setIsUsingBundled(false);
       }
     } catch (e) {
-      console.error('Failed to set binary path:', e);
+      console.error('Failed to set custom binary path:', e);
       throw e;
     }
   }, []);
 
-  const clearBinaryPath = useCallback(async () => {
+  const useBundledBinary = useCallback(async () => {
     try {
-      await invoke('set_binary_path', { path: null });
-      setBinaryPath(null);
+      await invoke('set_custom_binary_path', { path: null });
+      setCustomBinaryPath(null);
+      setIsUsingBundled(true);
     } catch (e) {
-      console.error('Failed to clear binary path:', e);
+      console.error('Failed to switch to bundled binary:', e);
       throw e;
     }
   }, []);
 
-  return { binaryPath, loading, refresh, selectBinaryPath, clearBinaryPath };
+  return {
+    customBinaryPath,
+    isUsingBundled,
+    loading,
+    refresh,
+    selectCustomBinaryPath,
+    useBundledBinary,
+  };
 }
