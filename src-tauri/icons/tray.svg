@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 22 22">
+  <!-- Background rounded square -->
+  <rect x="1" y="1" width="20" height="20" rx="4" ry="4" fill="#000000"/>
+
+  <!-- Simple circular tunnel -->
+  <circle cx="11" cy="11" r="3" fill="#FFFFFF"/>
+
+  <!-- Left arrow -->
+  <polygon points="3,11 6,8 6,9.5 8,9.5 8,12.5 6,12.5 6,14" fill="#FFFFFF"/>
+
+  <!-- Right arrow -->
+  <polygon points="19,11 16,8 16,9.5 14,9.5 14,12.5 16,12.5 16,14" fill="#FFFFFF"/>
+</svg>

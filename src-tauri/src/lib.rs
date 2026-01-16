@@ -7,7 +7,12 @@ use config::{ConfigStore, StoredConfig, TunnelClientConfig};
 use process::{ProcessManager, TunnelInstanceView};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tauri::{Emitter, Manager, State};
+use tauri::{
+    Emitter, Manager, State,
+    menu::{Menu, MenuItem},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    WindowEvent,
+};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
@@ -187,6 +192,64 @@ async fn set_binary_path(state: State<'_, AppState>, path: Option<String>) -> Re
 }
 
 // ============================================================================
+// Tray Icon Setup
+// ============================================================================
+
+fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    let show_item = MenuItem::with_id(app, "show", "Show", true, None::<&str>)?;
+    let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
+
+    // Use high-contrast tray icon for macOS menu bar (44x44 for retina)
+    let tray_icon = tauri::image::Image::from_bytes(include_bytes!("../icons/tray@2x.png"))?;
+
+    let _tray = TrayIconBuilder::new()
+        .icon(tray_icon)
+        .icon_as_template(false)
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| {
+            match event.id.as_ref() {
+                "show" => {
+                    if let Some(window) = app.get_webview_window("main") {
+                        if let Err(e) = window.show() {
+                            tracing::trace!("failed to show main window: {}", e);
+                        }
+                        if let Err(e) = window.set_focus() {
+                            tracing::trace!("failed to set focus on main window: {}", e);
+                        }
+                    }
+                }
+                "quit" => {
+                    app.exit(0);
+                }
+                _ => {}
+            }
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                let app = tray.app_handle();
+                if let Some(window) = app.get_webview_window("main") {
+                    if let Err(e) = window.show() {
+                        tracing::trace!("failed to show main window: {}", e);
+                    }
+                    if let Err(e) = window.set_focus() {
+                        tracing::trace!("failed to set focus on main window: {}", e);
+                    }
+                }
+            }
+        })
+        .build(app)?;
+
+    Ok(())
+}
+
+// ============================================================================
 // App Entry
 // ============================================================================
 
@@ -211,6 +274,20 @@ pub fn run() {
             set_binary_path,
         ])
         .setup(|app| {
+            // Set up system tray
+            setup_tray(app)?;
+
+            // Get main window and set up close handler to hide instead of quit
+            if let Some(window) = app.get_webview_window("main") {
+                let window_clone = window.clone();
+                window.on_window_event(move |event| {
+                    if let WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
+                        let _ = window_clone.hide();
+                    }
+                });
+            }
+
             // Emit config load error event if there was an error during startup
             if let Some(state) = app.try_state::<AppState>() {
                 if let Some(ref error) = state.config_load_error {
@@ -255,8 +332,8 @@ pub fn run() {
                         }
                     }
                 }
-                // Now exit
-                app_handle.exit(0);
+                // Force exit without re-triggering ExitRequested
+                std::process::exit(0);
             });
         }
     });
