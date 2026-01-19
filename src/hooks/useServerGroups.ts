@@ -69,12 +69,16 @@ export function useServerGroups() {
                 relayUrls: parseRelayUrls(form.relay_urls),
             });
 
-            setError(null);
-            await refresh();
+            if (mountedRef.current) {
+                setError(null);
+                await refresh();
+            }
             return group;
         } catch (e) {
             const message = e instanceof Error ? e.message : String(e);
-            setError(`Failed to create server group: ${message}`);
+            if (mountedRef.current) {
+                setError(`Failed to create server group: ${message}`);
+            }
             throw e;
         } finally {
             endMutation();
@@ -92,12 +96,16 @@ export function useServerGroups() {
                 relayUrls: parseRelayUrls(form.relay_urls),
             });
 
-            setError(null);
-            await refresh();
+            if (mountedRef.current) {
+                setError(null);
+                await refresh();
+            }
             return group;
         } catch (e) {
             const message = e instanceof Error ? e.message : String(e);
-            setError(`Failed to update server group: ${message}`);
+            if (mountedRef.current) {
+                setError(`Failed to update server group: ${message}`);
+            }
             throw e;
         } finally {
             endMutation();
@@ -108,11 +116,15 @@ export function useServerGroups() {
         startMutation();
         try {
             await invoke('delete_server_group', { id });
-            setError(null);
-            await refresh();
+            if (mountedRef.current) {
+                setError(null);
+                await refresh();
+            }
         } catch (e) {
             const message = e instanceof Error ? e.message : String(e);
-            setError(`Failed to delete server group: ${message}`);
+            if (mountedRef.current) {
+                setError(`Failed to delete server group: ${message}`);
+            }
             throw e;
         } finally {
             endMutation();

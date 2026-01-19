@@ -29,6 +29,10 @@ export function Sidebar({
 }: SidebarProps) {
     const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
 
+    const instancesByForwardingId = useMemo(() => new Map(
+        instances.map(i => [i.forwarding_id, i])
+    ), [instances]);
+
     const toggleGroup = (groupId: string) => {
         setCollapsedGroups(prev => {
             const next = new Set(prev);
@@ -57,9 +61,9 @@ export function Sidebar({
     }, [forwardingsByGroup]);
 
     const getInstanceStatus = useCallback((forwardingId: string) => {
-        const instance = instances.find(i => i.forwarding_id === forwardingId);
+        const instance = instancesByForwardingId.get(forwardingId);
         return instance?.status || 'stopped';
-    }, [instances]);
+    }, [instancesByForwardingId]);
 
     const getGroupRunningCount = useCallback((groupId: string) => {
         const groupForwardings = getForwardingsForGroup(groupId);
