@@ -31,16 +31,17 @@ export function ServerGroupCard({
     onStopForwarding,
     loading = false,
 }: ServerGroupCardProps) {
-    // Check if any forwarding in this group is running
-    const hasRunningForwarding = forwardings.some(f => {
-        const instance = instances.find(i => i.forwarding_id === f.id);
-        return instance && (instance.status === 'running' || instance.status === 'starting');
-    });
+    // Precompute instance lookup map for O(1) access
+    const instanceByForwardingId = new Map(
+        instances.map(i => [i.forwarding_id, i])
+    );
 
+    // Count running forwardings and derive boolean from it
     const runningCount = forwardings.filter(f => {
-        const instance = instances.find(i => i.forwarding_id === f.id);
+        const instance = instanceByForwardingId.get(f.id);
         return instance && (instance.status === 'running' || instance.status === 'starting');
     }).length;
+    const hasRunningForwarding = runningCount > 0;
 
     return (
         <div className={`server-group-card ${hasRunningForwarding ? 'active' : ''}`}>
@@ -111,21 +112,18 @@ export function ServerGroupCard({
                     </div>
                 ) : (
                     <div className="forwardings-list">
-                        {forwardings.map(forwarding => {
-                            const instance = instances.find(i => i.forwarding_id === forwarding.id);
-                            return (
-                                <ForwardingItem
-                                    key={forwarding.id}
-                                    forwarding={forwarding}
-                                    instance={instance}
-                                    onStart={() => onStartForwarding(forwarding.id)}
-                                    onStop={() => onStopForwarding(forwarding.id)}
-                                    onEdit={() => onEditForwarding(forwarding)}
-                                    onDelete={() => onDeleteForwarding(forwarding.id)}
-                                    loading={loading}
-                                />
-                            );
-                        })}
+                        {forwardings.map(forwarding => (
+                            <ForwardingItem
+                                key={forwarding.id}
+                                forwarding={forwarding}
+                                instance={instanceByForwardingId.get(forwarding.id)}
+                                onStart={() => onStartForwarding(forwarding.id)}
+                                onStop={() => onStopForwarding(forwarding.id)}
+                                onEdit={() => onEditForwarding(forwarding)}
+                                onDelete={() => onDeleteForwarding(forwarding.id)}
+                                loading={loading}
+                            />
+                        ))}
                     </div>
                 )}
             </div>
