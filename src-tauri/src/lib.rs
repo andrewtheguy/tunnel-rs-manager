@@ -174,7 +174,10 @@ async fn update_server_group(
         store.upsert_server_group(group.clone())?;
     }
 
-    // Update secrets store: remove old token if server_node_id changed, then set new token
+    // Update secrets store: set the new token first via state.secrets_store.lock().await and
+    // secrets.set_token(&server_node_id, &auth_token); if the node id changed (old_server_node_id
+    // != server_node_id), then remove the old token with secrets.remove_token(&old_server_node_id),
+    // preserving the old token if set_token fails.
     {
         let mut secrets = state.secrets_store.lock().await;
         secrets.set_token(&server_node_id, &auth_token)?;

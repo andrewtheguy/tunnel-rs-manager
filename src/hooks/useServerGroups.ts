@@ -30,7 +30,9 @@ export function useServerGroups() {
         mutationCountRef.current -= 1;
         if (mutationCountRef.current <= 0) {
             mutationCountRef.current = 0;
-            setMutating(false);
+            if (mountedRef.current) {
+                setMutating(false);
+            }
         }
     }, []);
 
