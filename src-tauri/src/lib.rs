@@ -115,14 +115,18 @@ async fn create_server_group(
         updated_at: now,
     };
 
-    // Save auth token to secrets store
+    // Persist server group first to avoid orphan secrets if this fails
+    {
+        let mut store = state.config_store.lock().await;
+        store.upsert_server_group(group.clone())?;
+    }
+
+    // Save auth token to secrets store (if this fails, user can re-edit to add token)
     {
         let mut secrets = state.secrets_store.lock().await;
         secrets.set_token(&server_node_id, &auth_token)?;
     }
 
-    let mut store = state.config_store.lock().await;
-    store.upsert_server_group(group.clone())?;
     Ok(group)
 }
 
@@ -141,12 +145,12 @@ async fn update_server_group(
 
     let uuid = Uuid::parse_str(&id).map_err(|e| format!("Invalid UUID: {}", e))?;
 
-    let (created_at, relay_urls_final) = {
+    let (created_at, relay_urls_final, old_server_node_id) = {
         let store = state.config_store.lock().await;
         let existing = store
             .get_server_group(uuid)
             .ok_or_else(|| "Server group not found".to_string())?;
-        (existing.created_at, relay_urls.unwrap_or_default())
+        (existing.created_at, relay_urls.unwrap_or_default(), existing.server_node_id.clone())
     };
 
     let now = std::time::SystemTime::now()
@@ -164,14 +168,21 @@ async fn update_server_group(
         updated_at: now,
     };
 
-    // Save auth token to secrets store
+    // Persist server group first to avoid orphan secrets if this fails
+    {
+        let mut store = state.config_store.lock().await;
+        store.upsert_server_group(group.clone())?;
+    }
+
+    // Update secrets store: remove old token if server_node_id changed, then set new token
     {
         let mut secrets = state.secrets_store.lock().await;
+        if old_server_node_id != server_node_id {
+            let _ = secrets.remove_token(&old_server_node_id);
+        }
         secrets.set_token(&server_node_id, &auth_token)?;
     }
 
-    let mut store = state.config_store.lock().await;
-    store.upsert_server_group(group.clone())?;
     Ok(group)
 }
 
