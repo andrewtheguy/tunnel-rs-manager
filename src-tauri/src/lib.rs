@@ -3,7 +3,7 @@
 mod config;
 mod process;
 
-use config::{AppSettings, ConfigStore, StoredConfig, TunnelClientConfig};
+use config::{AppSettings, ConfigStore, Forwarding, ServerGroup};
 use process::{ProcessManager, TunnelInstanceView};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -56,105 +56,200 @@ impl AppState {
 }
 
 // ============================================================================
-// Config Commands
+// Server Group Commands
 // ============================================================================
 
 #[tauri::command]
-async fn list_configs(state: State<'_, AppState>) -> Result<Vec<StoredConfig>, String> {
+async fn list_server_groups(state: State<'_, AppState>) -> Result<Vec<ServerGroup>, String> {
     let store = state.config_store.lock().await;
-    Ok(store.list())
+    Ok(store.list_server_groups())
 }
 
 #[tauri::command]
-async fn get_config(state: State<'_, AppState>, id: String) -> Result<StoredConfig, String> {
+async fn get_server_group(state: State<'_, AppState>, id: String) -> Result<ServerGroup, String> {
     let uuid = Uuid::parse_str(&id).map_err(|e| format!("Invalid UUID: {}", e))?;
     let store = state.config_store.lock().await;
-    store.get(uuid).cloned().ok_or_else(|| "Config not found".to_string())
+    store
+        .get_server_group(uuid)
+        .cloned()
+        .ok_or_else(|| "Server group not found".to_string())
 }
 
 #[tauri::command]
-async fn create_config(
+async fn create_server_group(
     state: State<'_, AppState>,
     name: String,
     server_node_id: String,
-    source: Option<String>,
-    target: Option<String>,
     auth_token: Option<String>,
     relay_urls: Option<Vec<String>>,
-) -> Result<StoredConfig, String> {
-    let mut config = TunnelClientConfig::new(server_node_id);
-    config.iroh.request_source = source;
-    config.iroh.target = target;
-    config.iroh.auth_token = auth_token;
-    if let Some(urls) = relay_urls {
-        config.iroh.relay_urls = urls;
-    }
-
+) -> Result<ServerGroup, String> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| format!("System time error: {}", e))?
         .as_secs();
 
-    let stored = StoredConfig {
+    let group = ServerGroup {
         id: Uuid::new_v4(),
         name,
-        config,
+        server_node_id,
+        auth_token,
+        relay_urls: relay_urls.unwrap_or_default(),
         created_at: now,
         updated_at: now,
     };
 
     let mut store = state.config_store.lock().await;
-    store.upsert(stored.clone())?;
-    Ok(stored)
+    store.upsert_server_group(group.clone())?;
+    Ok(group)
 }
 
 #[tauri::command]
-async fn update_config(
+async fn update_server_group(
     state: State<'_, AppState>,
     id: String,
     name: String,
     server_node_id: String,
-    source: Option<String>,
-    target: Option<String>,
     auth_token: Option<String>,
     relay_urls: Option<Vec<String>>,
-) -> Result<StoredConfig, String> {
+) -> Result<ServerGroup, String> {
     let uuid = Uuid::parse_str(&id).map_err(|e| format!("Invalid UUID: {}", e))?;
 
     let mut store = state.config_store.lock().await;
-    let existing = store.get(uuid).ok_or_else(|| "Config not found".to_string())?;
+    let existing = store
+        .get_server_group(uuid)
+        .ok_or_else(|| "Server group not found".to_string())?;
     let created_at = existing.created_at;
-
-    let mut config = TunnelClientConfig::new(server_node_id);
-    config.iroh.request_source = source;
-    config.iroh.target = target;
-    config.iroh.auth_token = auth_token;
-    if let Some(urls) = relay_urls {
-        config.iroh.relay_urls = urls;
-    }
 
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| format!("System time error: {}", e))?
         .as_secs();
 
-    let stored = StoredConfig {
+    let group = ServerGroup {
         id: uuid,
         name,
-        config,
+        server_node_id,
+        auth_token,
+        relay_urls: relay_urls.unwrap_or_default(),
         created_at,
         updated_at: now,
     };
 
-    store.upsert(stored.clone())?;
-    Ok(stored)
+    store.upsert_server_group(group.clone())?;
+    Ok(group)
 }
 
 #[tauri::command]
-async fn delete_config(state: State<'_, AppState>, id: String) -> Result<(), String> {
+async fn delete_server_group(state: State<'_, AppState>, id: String) -> Result<(), String> {
     let uuid = Uuid::parse_str(&id).map_err(|e| format!("Invalid UUID: {}", e))?;
     let mut store = state.config_store.lock().await;
-    store.delete(uuid)
+    store.delete_server_group(uuid)
+}
+
+// ============================================================================
+// Forwarding Commands
+// ============================================================================
+
+#[tauri::command]
+async fn list_forwardings(state: State<'_, AppState>) -> Result<Vec<Forwarding>, String> {
+    let store = state.config_store.lock().await;
+    Ok(store.list_forwardings())
+}
+
+#[tauri::command]
+async fn list_forwardings_by_group(
+    state: State<'_, AppState>,
+    server_group_id: String,
+) -> Result<Vec<Forwarding>, String> {
+    let uuid = Uuid::parse_str(&server_group_id).map_err(|e| format!("Invalid UUID: {}", e))?;
+    let store = state.config_store.lock().await;
+    Ok(store.list_forwardings_by_group(uuid))
+}
+
+#[tauri::command]
+async fn get_forwarding(state: State<'_, AppState>, id: String) -> Result<Forwarding, String> {
+    let uuid = Uuid::parse_str(&id).map_err(|e| format!("Invalid UUID: {}", e))?;
+    let store = state.config_store.lock().await;
+    store
+        .get_forwarding(uuid)
+        .cloned()
+        .ok_or_else(|| "Forwarding not found".to_string())
+}
+
+#[tauri::command]
+async fn create_forwarding(
+    state: State<'_, AppState>,
+    server_group_id: String,
+    name: String,
+    source: Option<String>,
+    target: Option<String>,
+) -> Result<Forwarding, String> {
+    let group_uuid =
+        Uuid::parse_str(&server_group_id).map_err(|e| format!("Invalid UUID: {}", e))?;
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| format!("System time error: {}", e))?
+        .as_secs();
+
+    let forwarding = Forwarding {
+        id: Uuid::new_v4(),
+        server_group_id: group_uuid,
+        name,
+        source,
+        target,
+        created_at: now,
+        updated_at: now,
+    };
+
+    let mut store = state.config_store.lock().await;
+    store.upsert_forwarding(forwarding.clone())?;
+    Ok(forwarding)
+}
+
+#[tauri::command]
+async fn update_forwarding(
+    state: State<'_, AppState>,
+    id: String,
+    server_group_id: String,
+    name: String,
+    source: Option<String>,
+    target: Option<String>,
+) -> Result<Forwarding, String> {
+    let uuid = Uuid::parse_str(&id).map_err(|e| format!("Invalid UUID: {}", e))?;
+    let group_uuid =
+        Uuid::parse_str(&server_group_id).map_err(|e| format!("Invalid UUID: {}", e))?;
+
+    let mut store = state.config_store.lock().await;
+    let existing = store
+        .get_forwarding(uuid)
+        .ok_or_else(|| "Forwarding not found".to_string())?;
+    let created_at = existing.created_at;
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| format!("System time error: {}", e))?
+        .as_secs();
+
+    let forwarding = Forwarding {
+        id: uuid,
+        server_group_id: group_uuid,
+        name,
+        source,
+        target,
+        created_at,
+        updated_at: now,
+    };
+
+    store.upsert_forwarding(forwarding.clone())?;
+    Ok(forwarding)
+}
+
+#[tauri::command]
+async fn delete_forwarding(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let uuid = Uuid::parse_str(&id).map_err(|e| format!("Invalid UUID: {}", e))?;
+    let mut store = state.config_store.lock().await;
+    store.delete_forwarding(uuid)
 }
 
 #[tauri::command]
@@ -172,27 +267,46 @@ async fn list_instances(state: State<'_, AppState>) -> Result<Vec<TunnelInstance
 }
 
 #[tauri::command]
-async fn get_instance(state: State<'_, AppState>, id: String) -> Result<Option<TunnelInstanceView>, String> {
+async fn get_instance(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Option<TunnelInstanceView>, String> {
     let uuid = Uuid::parse_str(&id).map_err(|e| format!("Invalid UUID: {}", e))?;
     Ok(state.process_manager.get_instance(uuid).await)
 }
 
 #[tauri::command]
-async fn start_tunnel(state: State<'_, AppState>, id: String) -> Result<(), String> {
-    let uuid = Uuid::parse_str(&id).map_err(|e| format!("Invalid UUID: {}", e))?;
+async fn start_tunnel(state: State<'_, AppState>, forwarding_id: String) -> Result<(), String> {
+    let uuid = Uuid::parse_str(&forwarding_id).map_err(|e| format!("Invalid UUID: {}", e))?;
 
-    // Clone config and drop lock before awaiting to avoid holding lock across await
-    let config = {
+    // Get forwarding, server group, and build config
+    let (forwarding_name, server_group_name, config) = {
         let store = state.config_store.lock().await;
-        store.get(uuid).cloned().ok_or_else(|| "Config not found".to_string())?
+
+        let forwarding = store
+            .get_forwarding(uuid)
+            .ok_or_else(|| "Forwarding not found".to_string())?;
+        let forwarding_name = forwarding.name.clone();
+
+        let group = store
+            .get_server_group(forwarding.server_group_id)
+            .ok_or_else(|| "Server group not found".to_string())?;
+        let server_group_name = group.name.clone();
+
+        let config = store.build_tunnel_config(uuid)?;
+
+        (forwarding_name, server_group_name, config)
     };
 
-    state.process_manager.start(&config).await
+    state
+        .process_manager
+        .start(uuid, &forwarding_name, &server_group_name, &config)
+        .await
 }
 
 #[tauri::command]
-async fn stop_tunnel(state: State<'_, AppState>, id: String) -> Result<(), String> {
-    let uuid = Uuid::parse_str(&id).map_err(|e| format!("Invalid UUID: {}", e))?;
+async fn stop_tunnel(state: State<'_, AppState>, forwarding_id: String) -> Result<(), String> {
+    let uuid = Uuid::parse_str(&forwarding_id).map_err(|e| format!("Invalid UUID: {}", e))?;
     state.process_manager.stop(uuid).await
 }
 
@@ -203,7 +317,10 @@ async fn get_custom_binary_path(state: State<'_, AppState>) -> Result<Option<Str
 }
 
 #[tauri::command]
-async fn set_custom_binary_path(state: State<'_, AppState>, path: Option<String>) -> Result<(), String> {
+async fn set_custom_binary_path(
+    state: State<'_, AppState>,
+    path: Option<String>,
+) -> Result<(), String> {
     // Persist to settings first to ensure consistency
     {
         let mut settings = state.app_settings.lock().await;
@@ -238,23 +355,21 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .icon_as_template(true)
         .menu(&menu)
         .show_menu_on_left_click(false)
-        .on_menu_event(|app, event| {
-            match event.id.as_ref() {
-                "show" => {
-                    if let Some(window) = app.get_webview_window("main") {
-                        if let Err(e) = window.show() {
-                            tracing::trace!("failed to show main window: {}", e);
-                        }
-                        if let Err(e) = window.set_focus() {
-                            tracing::trace!("failed to set focus on main window: {}", e);
-                        }
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "show" => {
+                if let Some(window) = app.get_webview_window("main") {
+                    if let Err(e) = window.show() {
+                        tracing::trace!("failed to show main window: {}", e);
+                    }
+                    if let Err(e) = window.set_focus() {
+                        tracing::trace!("failed to set focus on main window: {}", e);
                     }
                 }
-                "quit" => {
-                    app.exit(0);
-                }
-                _ => {}
             }
+            "quit" => {
+                app.exit(0);
+            }
+            _ => {}
         })
         .on_tray_icon_event(|tray, event| {
             if let TrayIconEvent::Click {
@@ -291,12 +406,19 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .manage(AppState::new())
         .invoke_handler(tauri::generate_handler![
-            // Config commands
-            list_configs,
-            get_config,
-            create_config,
-            update_config,
-            delete_config,
+            // Server Group commands
+            list_server_groups,
+            get_server_group,
+            create_server_group,
+            update_server_group,
+            delete_server_group,
+            // Forwarding commands
+            list_forwardings,
+            list_forwardings_by_group,
+            get_forwarding,
+            create_forwarding,
+            update_forwarding,
+            delete_forwarding,
             get_config_load_error,
             // Process commands
             list_instances,
@@ -332,7 +454,10 @@ pub fn run() {
                     // Apply saved custom binary path if set
                     let binary_path = state.app_settings.lock().await.binary_path.clone();
                     if let Some(path) = binary_path {
-                        state.process_manager.set_custom_binary_path(Some(path)).await;
+                        state
+                            .process_manager
+                            .set_custom_binary_path(Some(path))
+                            .await;
                     }
                 });
 
@@ -365,9 +490,12 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 // Stop all running tunnels with a timeout
                 if let Some(state) = app_handle.try_state::<AppState>() {
-                    const SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+                    const SHUTDOWN_TIMEOUT: std::time::Duration =
+                        std::time::Duration::from_secs(5);
 
-                    match tokio::time::timeout(SHUTDOWN_TIMEOUT, state.process_manager.stop_all()).await {
+                    match tokio::time::timeout(SHUTDOWN_TIMEOUT, state.process_manager.stop_all())
+                        .await
+                    {
                         Ok(()) => {
                             tracing::info!("All tunnels stopped gracefully");
                         }

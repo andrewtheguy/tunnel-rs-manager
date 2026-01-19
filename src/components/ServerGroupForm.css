@@ -1,4 +1,4 @@
-.config-form {
+.server-group-form {
     padding: 24px;
 }
 
@@ -21,12 +21,6 @@
 
 .form-group {
     margin-bottom: 20px;
-}
-
-.form-row {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 16px;
 }
 
 .form-group label {

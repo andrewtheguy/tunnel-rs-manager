@@ -2,6 +2,8 @@
 
 export { StatusBadge } from './StatusBadge';
 export { LogViewer } from './LogViewer';
-export { ConfigForm } from './ConfigForm';
-export { TunnelCard } from './TunnelCard';
 export { Sidebar } from './Sidebar';
+export { ServerGroupForm } from './ServerGroupForm';
+export { ForwardingForm } from './ForwardingForm';
+export { ServerGroupCard } from './ServerGroupCard';
+export { ForwardingItem } from './ForwardingItem';

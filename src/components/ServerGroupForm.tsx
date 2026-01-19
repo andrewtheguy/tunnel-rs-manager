@@ -1,8 +1,8 @@
-// Config edit/create form component
+// Server Group edit/create form component
 
 import { useState, useEffect, useMemo } from 'react';
-import type { ConfigFormData } from '../types';
-import './ConfigForm.css';
+import type { ServerGroupFormData } from '../types';
+import './ServerGroupForm.css';
 
 // Valid characters for auth token body: A-Za-z0-9 and -_.
 const TOKEN_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.';
@@ -69,19 +69,17 @@ function validateAuthToken(token: string): string | null {
     return null;
 }
 
-interface ConfigFormProps {
-    initial?: ConfigFormData;
-    onSubmit: (data: ConfigFormData) => Promise<void>;
+interface ServerGroupFormProps {
+    initial?: ServerGroupFormData;
+    onSubmit: (data: ServerGroupFormData) => Promise<void>;
     onCancel: () => void;
     isEditing?: boolean;
 }
 
-export function ConfigForm({ initial, onSubmit, onCancel, isEditing = false }: ConfigFormProps) {
-    const [form, setForm] = useState<ConfigFormData>(initial || {
+export function ServerGroupForm({ initial, onSubmit, onCancel, isEditing = false }: ServerGroupFormProps) {
+    const [form, setForm] = useState<ServerGroupFormData>(initial || {
         name: '',
         server_node_id: '',
-        source: '',
-        target: '',
         auth_token: '',
         relay_urls: '',
     });
@@ -99,7 +97,7 @@ export function ConfigForm({ initial, onSubmit, onCancel, isEditing = false }: C
         }
     }, [initial]);
 
-    const handleChange = (field: keyof ConfigFormData) => (
+    const handleChange = (field: keyof ServerGroupFormData) => (
         e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>
     ) => {
         setForm(prev => ({ ...prev, [field]: e.target.value }));
@@ -135,9 +133,9 @@ export function ConfigForm({ initial, onSubmit, onCancel, isEditing = false }: C
     };
 
     return (
-        <form className="config-form" onSubmit={handleSubmit}>
+        <form className="server-group-form" onSubmit={handleSubmit}>
             <h2 className="form-title">
-                {isEditing ? 'Edit Configuration' : 'New Configuration'}
+                {isEditing ? 'Edit Server Group' : 'New Server Group'}
             </h2>
 
             {error && <div className="form-error">{error}</div>}
@@ -150,8 +148,9 @@ export function ConfigForm({ initial, onSubmit, onCancel, isEditing = false }: C
                         type="text"
                         value={form.name}
                         onChange={handleChange('name')}
-                        placeholder="My SSH Tunnel"
+                        placeholder="My Server"
                         autoFocus
+                        autoCapitalize="off"
                     />
                 </div>
 
@@ -163,36 +162,9 @@ export function ConfigForm({ initial, onSubmit, onCancel, isEditing = false }: C
                         value={form.server_node_id}
                         onChange={handleChange('server_node_id')}
                         placeholder="2xnbkpbc7izsilvewd7c62w7wnwziacmpfwvhcrya5nt76dqkpga"
+                        autoCapitalize="off"
                     />
                     <span className="help-text">The EndpointId of the tunnel-rs server</span>
-                </div>
-
-                <div className="form-row">
-                    <div className="form-group">
-                        <label htmlFor="source">Source Address</label>
-                        <input
-                            id="source"
-                            type="text"
-                            value={form.source}
-                            onChange={handleChange('source')}
-                            placeholder="tcp://127.0.0.1:22"
-                            autoCapitalize="off"
-                        />
-                        <span className="help-text">Remote service to tunnel</span>
-                    </div>
-
-                    <div className="form-group">
-                        <label htmlFor="target">Local Target</label>
-                        <input
-                            id="target"
-                            type="text"
-                            value={form.target}
-                            onChange={handleChange('target')}
-                            placeholder="127.0.0.1:2222"
-                            autoCapitalize="off"
-                        />
-                        <span className="help-text">Local address to listen on</span>
-                    </div>
                 </div>
 
                 <div className="form-group">
@@ -204,6 +176,7 @@ export function ConfigForm({ initial, onSubmit, onCancel, isEditing = false }: C
                         onChange={handleChange('auth_token')}
                         placeholder="iXXXXXXXXXXXXXXXXX"
                         className={authTokenError ? 'input-error' : ''}
+                        autoCapitalize="off"
                     />
                     {authTokenError ? (
                         <span className="field-error">{authTokenError}</span>

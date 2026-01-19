@@ -1,6 +1,6 @@
 //! Process management for tunnel-rs client instances
 
-use crate::config::StoredConfig;
+use crate::config::TunnelClientConfig;
 use std::collections::{HashMap, VecDeque};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -38,8 +38,9 @@ pub enum ChildProcess {
 
 /// A running tunnel instance
 pub struct TunnelInstance {
-    pub config_id: Uuid,
-    pub config_name: String,
+    pub forwarding_id: Uuid,
+    pub forwarding_name: String,
+    pub server_group_name: String,
     pub status: TunnelStatus,
     pub child: Option<ChildProcess>,
     pub logs: VecDeque<LogEntry>,
@@ -47,10 +48,11 @@ pub struct TunnelInstance {
 }
 
 impl TunnelInstance {
-    fn new(config_id: Uuid, config_name: String) -> Self {
+    fn new(forwarding_id: Uuid, forwarding_name: String, server_group_name: String) -> Self {
         Self {
-            config_id,
-            config_name,
+            forwarding_id,
+            forwarding_name,
+            server_group_name,
             status: TunnelStatus::Stopped,
             child: None,
             logs: VecDeque::new(),
@@ -80,8 +82,9 @@ impl TunnelInstance {
 /// Serializable view of a tunnel instance
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct TunnelInstanceView {
-    pub config_id: Uuid,
-    pub config_name: String,
+    pub forwarding_id: Uuid,
+    pub forwarding_name: String,
+    pub server_group_name: String,
     pub status: TunnelStatus,
     pub logs: VecDeque<LogEntry>,
 }
@@ -89,8 +92,9 @@ pub struct TunnelInstanceView {
 impl From<&TunnelInstance> for TunnelInstanceView {
     fn from(instance: &TunnelInstance) -> Self {
         Self {
-            config_id: instance.config_id,
-            config_name: instance.config_name.clone(),
+            forwarding_id: instance.forwarding_id,
+            forwarding_name: instance.forwarding_name.clone(),
+            server_group_name: instance.server_group_name.clone(),
             status: instance.status.clone(),
             logs: instance.logs.clone(),
         }
@@ -142,14 +146,14 @@ impl ProcessManager {
             let guard = instance.lock().await;
             views.push(TunnelInstanceView::from(&*guard));
         }
-        views.sort_by(|a, b| a.config_name.cmp(&b.config_name));
+        views.sort_by(|a, b| a.forwarding_name.cmp(&b.forwarding_name));
         views
     }
 
-    /// Get a specific instance
-    pub async fn get_instance(&self, id: Uuid) -> Option<TunnelInstanceView> {
+    /// Get a specific instance by forwarding_id
+    pub async fn get_instance(&self, forwarding_id: Uuid) -> Option<TunnelInstanceView> {
         let instances = self.instances.read().await;
-        if let Some(instance) = instances.get(&id) {
+        if let Some(instance) = instances.get(&forwarding_id) {
             let guard = instance.lock().await;
             Some(TunnelInstanceView::from(&*guard))
         } else {
@@ -157,16 +161,20 @@ impl ProcessManager {
         }
     }
 
-    /// Start a tunnel with the given config
-    pub async fn start(&self, config: &StoredConfig) -> Result<(), String> {
-        let id = config.id;
-
+    /// Start a tunnel with the given forwarding info and built config
+    pub async fn start(
+        &self,
+        forwarding_id: Uuid,
+        forwarding_name: &str,
+        server_group_name: &str,
+        config: &TunnelClientConfig,
+    ) -> Result<(), String> {
         // Create instance and insert atomically under write lock to prevent TOCTOU
         let instance = {
             let mut instances = self.instances.write().await;
 
             // Check if already running while holding write lock
-            if let Some(existing) = instances.get(&id) {
+            if let Some(existing) = instances.get(&forwarding_id) {
                 let guard = existing.lock().await;
                 match guard.status {
                     TunnelStatus::Running | TunnelStatus::Starting => {
@@ -177,13 +185,17 @@ impl ProcessManager {
             }
 
             // Create and insert instance while still holding write lock
-            let instance = Arc::new(Mutex::new(TunnelInstance::new(id, config.name.clone())));
+            let instance = Arc::new(Mutex::new(TunnelInstance::new(
+                forwarding_id,
+                forwarding_name.to_string(),
+                server_group_name.to_string(),
+            )));
             {
                 let mut guard = instance.lock().await;
                 guard.status = TunnelStatus::Starting;
                 guard.add_log("Starting tunnel...".to_string(), false);
             }
-            instances.insert(id, instance.clone());
+            instances.insert(forwarding_id, instance.clone());
 
             instance
             // Write lock released here
@@ -191,9 +203,9 @@ impl ProcessManager {
 
         // Write temp config file
         let temp_dir = std::env::temp_dir();
-        let config_path = temp_dir.join(format!("tunnel-rs-{}.toml", id));
+        let config_path = temp_dir.join(format!("tunnel-rs-{}.toml", forwarding_id));
 
-        let toml_content = match config.config.to_toml() {
+        let toml_content = match config.to_toml() {
             Ok(content) => content,
             Err(e) => {
                 // Clean up: set error status, remove from instances
@@ -203,7 +215,7 @@ impl ProcessManager {
                     guard.add_log(format!("Failed to serialize config: {}", e), true);
                 }
                 let mut instances = self.instances.write().await;
-                instances.remove(&id);
+                instances.remove(&forwarding_id);
                 return Err(format!("Failed to serialize config: {}", e));
             }
         };
@@ -216,7 +228,7 @@ impl ProcessManager {
                 guard.add_log(format!("Failed to write temp config: {}", e), true);
             }
             let mut instances = self.instances.write().await;
-            instances.remove(&id);
+            instances.remove(&forwarding_id);
             return Err(format!("Failed to write temp config: {}", e));
         }
 
@@ -230,11 +242,12 @@ impl ProcessManager {
 
         if let Some(binary_path) = custom_path {
             // Use custom binary path with tokio::process::Command
-            self.start_with_custom_binary(&instance, id, &binary_path, &config_path)
+            self.start_with_custom_binary(&instance, forwarding_id, &binary_path, &config_path)
                 .await
         } else {
             // Use bundled sidecar
-            self.start_with_sidecar(&instance, id, &config_path).await
+            self.start_with_sidecar(&instance, forwarding_id, &config_path)
+                .await
         }
     }
 
@@ -492,9 +505,9 @@ impl ProcessManager {
     }
 
     /// Stop a running tunnel
-    pub async fn stop(&self, id: Uuid) -> Result<(), String> {
+    pub async fn stop(&self, forwarding_id: Uuid) -> Result<(), String> {
         let instances = self.instances.read().await;
-        if let Some(instance) = instances.get(&id) {
+        if let Some(instance) = instances.get(&forwarding_id) {
             let mut guard = instance.lock().await;
 
             match guard.child.take() {

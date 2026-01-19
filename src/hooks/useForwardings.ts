@@ -1,20 +1,11 @@
-// React hooks for tunnel config management via Tauri
+// React hooks for forwarding management via Tauri
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import type { StoredConfig, ConfigFormData } from '../types';
+import type { Forwarding, ForwardingFormData } from '../types';
 
-/** Parse comma-separated relay URLs, returning null if empty */
-function parseRelayUrls(input: string): string[] | null {
-    const urls = input
-        .split(',')
-        .map(s => s.trim())
-        .filter(s => s.length > 0);
-    return urls.length > 0 ? urls : null;
-}
-
-export function useTunnelConfigs() {
-    const [configs, setConfigs] = useState<StoredConfig[]>([]);
+export function useForwardings() {
+    const [forwardings, setForwardings] = useState<Forwarding[]>([]);
     const [loading, setLoading] = useState(true);
     const [mutating, setMutating] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -28,7 +19,7 @@ export function useTunnelConfigs() {
     const endMutation = useCallback(() => {
         mutationCountRef.current -= 1;
         if (mutationCountRef.current <= 0) {
-            mutationCountRef.current = 0; // Clamp to prevent negative
+            mutationCountRef.current = 0;
             setMutating(false);
         }
     }, []);
@@ -37,8 +28,8 @@ export function useTunnelConfigs() {
         try {
             setLoading(true);
             setError(null);
-            const result = await invoke<StoredConfig[]>('list_configs');
-            setConfigs(result);
+            const result = await invoke<Forwarding[]>('list_forwardings');
+            setForwardings(result);
         } catch (e) {
             setError(e instanceof Error ? e.message : String(e));
         } finally {
@@ -50,78 +41,84 @@ export function useTunnelConfigs() {
         refresh();
     }, [refresh]);
 
-    const createConfig = useCallback(async (form: ConfigFormData): Promise<StoredConfig> => {
+    const createForwarding = useCallback(async (serverGroupId: string, form: ForwardingFormData): Promise<Forwarding> => {
         startMutation();
         try {
-            const config = await invoke<StoredConfig>('create_config', {
+            const forwarding = await invoke<Forwarding>('create_forwarding', {
+                serverGroupId,
                 name: form.name,
-                serverNodeId: form.server_node_id,
                 source: form.source || null,
                 target: form.target || null,
-                authToken: form.auth_token || null,
-                relayUrls: parseRelayUrls(form.relay_urls),
             });
 
             setError(null);
             await refresh();
-            return config;
+            return forwarding;
         } catch (e) {
             const message = e instanceof Error ? e.message : String(e);
-            setError(`Failed to create config: ${message}`);
+            setError(`Failed to create forwarding: ${message}`);
             throw e;
         } finally {
             endMutation();
         }
     }, [refresh, startMutation, endMutation]);
 
-    const updateConfig = useCallback(async (id: string, form: ConfigFormData): Promise<StoredConfig> => {
+    const updateForwarding = useCallback(async (id: string, serverGroupId: string, form: ForwardingFormData): Promise<Forwarding> => {
         startMutation();
         try {
-            const config = await invoke<StoredConfig>('update_config', {
+            const forwarding = await invoke<Forwarding>('update_forwarding', {
                 id,
+                serverGroupId,
                 name: form.name,
-                serverNodeId: form.server_node_id,
                 source: form.source || null,
                 target: form.target || null,
-                authToken: form.auth_token || null,
-                relayUrls: parseRelayUrls(form.relay_urls),
             });
 
             setError(null);
             await refresh();
-            return config;
+            return forwarding;
         } catch (e) {
             const message = e instanceof Error ? e.message : String(e);
-            setError(`Failed to update config: ${message}`);
+            setError(`Failed to update forwarding: ${message}`);
             throw e;
         } finally {
             endMutation();
         }
     }, [refresh, startMutation, endMutation]);
 
-    const deleteConfig = useCallback(async (id: string): Promise<void> => {
+    const deleteForwarding = useCallback(async (id: string): Promise<void> => {
         startMutation();
         try {
-            await invoke('delete_config', { id });
+            await invoke('delete_forwarding', { id });
             setError(null);
             await refresh();
         } catch (e) {
             const message = e instanceof Error ? e.message : String(e);
-            setError(`Failed to delete config: ${message}`);
+            setError(`Failed to delete forwarding: ${message}`);
             throw e;
         } finally {
             endMutation();
         }
     }, [refresh, startMutation, endMutation]);
+
+    const getForwarding = useCallback((id: string): Forwarding | undefined => {
+        return forwardings.find(f => f.id === id);
+    }, [forwardings]);
+
+    const getForwardingsByGroup = useCallback((serverGroupId: string): Forwarding[] => {
+        return forwardings.filter(f => f.server_group_id === serverGroupId);
+    }, [forwardings]);
 
     return {
-        configs,
+        forwardings,
         loading,
         mutating,
         error,
         refresh,
-        createConfig,
-        updateConfig,
-        deleteConfig,
+        createForwarding,
+        updateForwarding,
+        deleteForwarding,
+        getForwarding,
+        getForwardingsByGroup,
     };
 }
