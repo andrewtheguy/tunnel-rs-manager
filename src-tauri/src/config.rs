@@ -308,7 +308,8 @@ impl ConfigStore {
             .unwrap_or_default()
             .as_secs();
 
-        if self.server_groups.contains_key(&group.id) {
+        if let Some(existing) = self.server_groups.get(&group.id) {
+            group.created_at = existing.created_at;
             group.updated_at = now;
         } else {
             group.created_at = now;
@@ -372,7 +373,8 @@ impl ConfigStore {
             .unwrap_or_default()
             .as_secs();
 
-        if self.forwardings.contains_key(&forwarding.id) {
+        if let Some(existing) = self.forwardings.get(&forwarding.id) {
+            forwarding.created_at = existing.created_at;
             forwarding.updated_at = now;
         } else {
             forwarding.created_at = now;
