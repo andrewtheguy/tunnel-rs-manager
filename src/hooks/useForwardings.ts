@@ -29,7 +29,7 @@ export function useForwardings() {
     const [mutating, setMutating] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const mutationCountRef = useRef(0);
-    const mountedRef = useRef(true);
+    const mountedRef = useRef(false);
 
     const startMutation = useCallback(() => {
         mutationCountRef.current += 1;
