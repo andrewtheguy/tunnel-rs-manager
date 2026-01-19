@@ -163,6 +163,9 @@ export function ServerGroupForm({ initial, onSubmit, onCancel, isEditing = false
                         onChange={handleChange('server_node_id')}
                         placeholder="2xnbkpbc7izsilvewd7c62w7wnwziacmpfwvhcrya5nt76dqkpga"
                         autoCapitalize="none"
+                        autoComplete="off"
+                        autoCorrect="off"
+                        spellCheck={false}
                     />
                     <span className="help-text">The EndpointId of the tunnel-rs server</span>
                 </div>
@@ -177,6 +180,9 @@ export function ServerGroupForm({ initial, onSubmit, onCancel, isEditing = false
                         placeholder="iXXXXXXXXXXXXXXXXX"
                         className={authTokenError ? 'input-error' : ''}
                         autoCapitalize="none"
+                        autoComplete="off"
+                        autoCorrect="off"
+                        spellCheck={false}
                     />
                     {authTokenError ? (
                         <span className="field-error">{authTokenError}</span>
@@ -194,6 +200,9 @@ export function ServerGroupForm({ initial, onSubmit, onCancel, isEditing = false
                         placeholder="https://relay1.example.com, https://relay2.example.com"
                         rows={2}
                         autoCapitalize="none"
+                        autoComplete="off"
+                        autoCorrect="off"
+                        spellCheck={false}
                     />
                     <span className="help-text">Comma-separated custom relay URLs</span>
                 </div>
