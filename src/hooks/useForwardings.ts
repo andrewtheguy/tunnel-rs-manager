@@ -4,6 +4,25 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import type { Forwarding, ForwardingFormData } from '../types';
 
+function buildForwardingPayload(form: ForwardingFormData) {
+    const source = form.source?.trim();
+    const target = form.target?.trim();
+
+    if (!source) {
+        throw new Error('Source address is required');
+    }
+
+    if (!target) {
+        throw new Error('Target address is required');
+    }
+
+    return {
+        name: form.name?.trim() ?? '',
+        source,
+        target,
+    };
+}
+
 export function useForwardings() {
     const [forwardings, setForwardings] = useState<Forwarding[]>([]);
     const [loading, setLoading] = useState(true);
@@ -44,11 +63,10 @@ export function useForwardings() {
     const createForwarding = useCallback(async (serverGroupId: string, form: ForwardingFormData): Promise<Forwarding> => {
         startMutation();
         try {
+            const payload = buildForwardingPayload(form);
             const forwarding = await invoke<Forwarding>('create_forwarding', {
                 serverGroupId,
-                name: form.name,
-                source: form.source,
-                target: form.target,
+                ...payload,
             });
 
             setError(null);
@@ -66,12 +84,11 @@ export function useForwardings() {
     const updateForwarding = useCallback(async (id: string, serverGroupId: string, form: ForwardingFormData): Promise<Forwarding> => {
         startMutation();
         try {
+            const payload = buildForwardingPayload(form);
             const forwarding = await invoke<Forwarding>('update_forwarding', {
                 id,
                 serverGroupId,
-                name: form.name,
-                source: form.source,
-                target: form.target,
+                ...payload,
             });
 
             setError(null);

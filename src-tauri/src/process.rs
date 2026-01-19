@@ -220,7 +220,7 @@ impl ProcessManager {
             }
         };
 
-        if let Err(e) = std::fs::write(&config_path, &toml_content) {
+        if let Err(e) = tokio::fs::write(&config_path, &toml_content).await {
             // Clean up: set error status, remove from instances
             {
                 let mut guard = instance.lock().await;

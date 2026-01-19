@@ -1,5 +1,6 @@
 // Server Group card component showing group details and its forwardings
 
+import { useMemo } from 'react';
 import type { ServerGroup, Forwarding, TunnelInstance } from '../types';
 import { ForwardingItem } from './ForwardingItem';
 import './ServerGroupCard.css';
@@ -32,9 +33,9 @@ export function ServerGroupCard({
     loading = false,
 }: ServerGroupCardProps) {
     // Precompute instance lookup map for O(1) access
-    const instanceByForwardingId = new Map(
+    const instanceByForwardingId = useMemo(() => new Map(
         instances.map(i => [i.forwarding_id, i])
-    );
+    ), [instances]);
 
     // Count running forwardings and derive boolean from it
     const runningCount = forwardings.filter(f => {

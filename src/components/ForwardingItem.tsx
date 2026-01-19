@@ -28,7 +28,8 @@ export function ForwardingItem({
     const [showLogs, setShowLogs] = useState(false);
     const status = instance?.status || 'stopped';
     const isRunning = status === 'running' || status === 'starting';
-    const hasLogs = instance && instance.logs.length > 0;
+    const hasLogs = !!instance && instance.logs.length > 0;
+    const recentLogs = hasLogs && instance ? instance.logs.slice(-20) : [];
 
     return (
         <div className={`forwarding-item ${isRunning ? 'active' : ''}`}>
@@ -97,9 +98,9 @@ export function ForwardingItem({
                 </div>
             </div>
 
-            {showLogs && instance && instance.logs.length > 0 && (
+            {showLogs && hasLogs && (
                 <div className="forwarding-logs">
-                    <LogViewer logs={instance.logs.slice(-20)} maxHeight="150px" />
+                    <LogViewer logs={recentLogs} maxHeight="150px" />
                 </div>
             )}
         </div>

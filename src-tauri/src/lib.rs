@@ -177,10 +177,10 @@ async fn update_server_group(
     // Update secrets store: remove old token if server_node_id changed, then set new token
     {
         let mut secrets = state.secrets_store.lock().await;
+        secrets.set_token(&server_node_id, &auth_token)?;
         if old_server_node_id != server_node_id {
             let _ = secrets.remove_token(&old_server_node_id);
         }
-        secrets.set_token(&server_node_id, &auth_token)?;
     }
 
     Ok(group)
