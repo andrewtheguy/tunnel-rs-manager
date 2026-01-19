@@ -47,8 +47,8 @@ export function useForwardings() {
             const forwarding = await invoke<Forwarding>('create_forwarding', {
                 serverGroupId,
                 name: form.name,
-                source: form.source || null,
-                target: form.target || null,
+                source: form.source,
+                target: form.target,
             });
 
             setError(null);
@@ -70,8 +70,8 @@ export function useForwardings() {
                 id,
                 serverGroupId,
                 name: form.name,
-                source: form.source || null,
-                target: form.target || null,
+                source: form.source,
+                target: form.target,
             });
 
             setError(null);

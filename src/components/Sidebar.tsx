@@ -1,6 +1,6 @@
 // Sidebar component showing hierarchical server groups and forwardings
 
-import { useState } from 'react';
+import { useState, useMemo, useCallback } from 'react';
 import type { ServerGroup, Forwarding, TunnelInstance } from '../types';
 import { StatusBadge } from './StatusBadge';
 import { version } from '../../package.json';
@@ -41,22 +41,33 @@ export function Sidebar({
         });
     };
 
-    const getForwardingsForGroup = (groupId: string) => {
-        return forwardings.filter(f => f.server_group_id === groupId);
-    };
+    // Memoize forwardings grouped by server_group_id to avoid repeated filtering
+    const forwardingsByGroup = useMemo(() => {
+        const map = new Map<string, Forwarding[]>();
+        for (const f of forwardings) {
+            const list = map.get(f.server_group_id) || [];
+            list.push(f);
+            map.set(f.server_group_id, list);
+        }
+        return map;
+    }, [forwardings]);
 
-    const getInstanceStatus = (forwardingId: string) => {
+    const getForwardingsForGroup = useCallback((groupId: string) => {
+        return forwardingsByGroup.get(groupId) || [];
+    }, [forwardingsByGroup]);
+
+    const getInstanceStatus = useCallback((forwardingId: string) => {
         const instance = instances.find(i => i.forwarding_id === forwardingId);
         return instance?.status || 'stopped';
-    };
+    }, [instances]);
 
-    const getGroupRunningCount = (groupId: string) => {
+    const getGroupRunningCount = useCallback((groupId: string) => {
         const groupForwardings = getForwardingsForGroup(groupId);
         return groupForwardings.filter(f => {
             const status = getInstanceStatus(f.id);
             return status === 'running' || status === 'starting';
         }).length;
-    };
+    }, [getForwardingsForGroup, getInstanceStatus]);
 
     const totalRunning = instances.filter(
         i => i.status === 'running' || i.status === 'starting'

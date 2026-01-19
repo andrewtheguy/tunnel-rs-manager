@@ -109,12 +109,20 @@ export function ServerGroupForm({ initial, onSubmit, onCancel, isEditing = false
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
 
+        // Create trimmed copy for validation and submission
+        const trimmedForm: ServerGroupFormData = {
+            name: form.name.trim(),
+            server_node_id: form.server_node_id.trim(),
+            auth_token: form.auth_token.trim(),
+            relay_urls: form.relay_urls.trim(),
+        };
+
         // Validation
-        if (!form.name.trim()) {
+        if (!trimmedForm.name) {
             setError('Name is required');
             return;
         }
-        if (!form.server_node_id.trim()) {
+        if (!trimmedForm.server_node_id) {
             setError('Server Node ID is required');
             return;
         }
@@ -126,7 +134,7 @@ export function ServerGroupForm({ initial, onSubmit, onCancel, isEditing = false
         setSubmitting(true);
         setError(null);
         try {
-            await onSubmit(form);
+            await onSubmit(trimmedForm);
         } catch (e) {
             setError(e instanceof Error ? e.message : String(e));
         } finally {
