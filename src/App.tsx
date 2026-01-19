@@ -1,5 +1,7 @@
 import { useState, useCallback, useMemo, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { save } from '@tauri-apps/plugin-dialog';
+import { writeTextFile } from '@tauri-apps/plugin-fs';
 import { Sidebar, ServerGroupCard, ServerGroupForm, ForwardingForm } from './components';
 import { useServerGroups, useForwardings, useTunnelInstances, useBinaryPath } from './hooks';
 import type { ServerGroup, Forwarding, ServerGroupFormData, ForwardingFormData, ImportResult } from './types';
@@ -175,16 +177,16 @@ function App() {
   const handleExport = useCallback(async () => {
     try {
       const json = await invoke<string>('export_configs');
-      // Create a downloadable file
-      const blob = new Blob([json], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'tunnel-rs-configs.json';
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+
+      // Open save dialog
+      const filePath = await save({
+        defaultPath: 'tunnel-rs-configs.json',
+        filters: [{ name: 'JSON', extensions: ['json'] }],
+      });
+
+      if (filePath) {
+        await writeTextFile(filePath, json);
+      }
     } catch (e) {
       alert(`Failed to export configs: ${e instanceof Error ? e.message : e}`);
     }
