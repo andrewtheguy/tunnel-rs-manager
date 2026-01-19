@@ -4,6 +4,9 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import type { TunnelInstance } from '../types';
 
+/** Minimal forwarding reference for group membership checks */
+type ForwardingRef = { id: string; server_group_id: string };
+
 export function useTunnelInstances() {
     const [instances, setInstances] = useState<TunnelInstance[]>([]);
     const [loading, setLoading] = useState(false);
@@ -32,11 +35,11 @@ export function useTunnelInstances() {
         };
     }, [refresh]);
 
-    const startTunnel = useCallback(async (id: string): Promise<void> => {
+    const startTunnel = useCallback(async (forwardingId: string): Promise<void> => {
         setLoading(true);
         setError(null);
         try {
-            await invoke('start_tunnel', { id });
+            await invoke('start_tunnel', { forwardingId });
             await refresh();
         } catch (e) {
             const message = e instanceof Error ? e.message : String(e);
@@ -47,11 +50,11 @@ export function useTunnelInstances() {
         }
     }, [refresh]);
 
-    const stopTunnel = useCallback(async (id: string): Promise<void> => {
+    const stopTunnel = useCallback(async (forwardingId: string): Promise<void> => {
         setLoading(true);
         setError(null);
         try {
-            await invoke('stop_tunnel', { id });
+            await invoke('stop_tunnel', { forwardingId });
             await refresh();
         } catch (e) {
             const message = e instanceof Error ? e.message : String(e);
@@ -62,8 +65,19 @@ export function useTunnelInstances() {
         }
     }, [refresh]);
 
-    const getInstance = useCallback((configId: string): TunnelInstance | undefined => {
-        return instances.find(i => i.config_id === configId);
+    const getInstance = useCallback((forwardingId: string): TunnelInstance | undefined => {
+        return instances.find(i => i.forwarding_id === forwardingId);
+    }, [instances]);
+
+    /** Check if any forwarding in a group is running */
+    const isGroupRunning = useCallback((serverGroupId: string, forwardings: ForwardingRef[]): boolean => {
+        const groupForwardingIds = forwardings
+            .filter(f => f.server_group_id === serverGroupId)
+            .map(f => f.id);
+        return instances.some(
+            i => groupForwardingIds.includes(i.forwarding_id) &&
+                 (i.status === 'running' || i.status === 'starting')
+        );
     }, [instances]);
 
     return {
@@ -74,5 +88,6 @@ export function useTunnelInstances() {
         startTunnel,
         stopTunnel,
         getInstance,
+        isGroupRunning,
     };
 }

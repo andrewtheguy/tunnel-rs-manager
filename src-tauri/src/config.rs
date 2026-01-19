@@ -4,7 +4,16 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
+
+/// Get current Unix timestamp in seconds
+fn current_timestamp() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
 
 /// Iroh transport tuning configuration
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -73,23 +82,125 @@ impl TunnelClientConfig {
     }
 }
 
-/// Stored config entry with metadata
+/// Server Group: Named collection of shared connection settings
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StoredConfig {
+pub struct ServerGroup {
     pub id: Uuid,
     pub name: String,
-    pub config: TunnelClientConfig,
+    pub server_node_id: String,
+    /// Auth token is stored separately in secrets.json, not in configs.json
+    #[serde(skip)]
+    pub auth_token: Option<String>,
+    #[serde(default)]
+    pub relay_urls: Vec<String>,
     #[serde(default)]
     pub created_at: u64,
     #[serde(default)]
     pub updated_at: u64,
 }
 
-/// Config store managing all saved configurations
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct ConfigStore {
-    pub configs: HashMap<Uuid, StoredConfig>,
+/// Forwarding: Individual named source/target pair within a server group
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Forwarding {
+    pub id: Uuid,
+    pub server_group_id: Uuid,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    #[serde(default)]
+    pub created_at: u64,
+    #[serde(default)]
+    pub updated_at: u64,
 }
+
+// ============================================================================
+// Export/Import Data Structures
+// ============================================================================
+
+/// Export data format (shareable, no secrets)
+/// The `config` field has the same structure as configs.json
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExportData {
+    pub version: u32,
+    pub exported_at: u64,
+    pub config: ConfigStore,
+}
+
+/// Result of import operation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportResult {
+    pub success: bool,
+    pub groups_imported: usize,
+    pub forwardings_imported: usize,
+    pub groups_skipped: usize,
+    pub forwardings_skipped: usize,
+    pub errors: Vec<String>,
+}
+
+// ============================================================================
+// Secrets Store
+// ============================================================================
+
+/// Secrets store for auth tokens (server_node_id -> auth_token)
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SecretsStore {
+    pub auth_tokens: HashMap<String, String>,
+}
+
+impl SecretsStore {
+    /// Get the secrets file path
+    fn secrets_path() -> Result<PathBuf, String> {
+        Ok(app_data_dir()?.join("secrets.json"))
+    }
+
+    /// Load secrets from disk
+    pub fn load() -> Result<Self, String> {
+        let path = Self::secrets_path()?;
+        if !path.exists() {
+            return Ok(Self::default());
+        }
+        let content = fs::read_to_string(&path)
+            .map_err(|e| format!("Failed to read secrets: {}", e))?;
+        serde_json::from_str(&content)
+            .map_err(|e| format!("Failed to parse secrets: {}", e))
+    }
+
+    /// Save secrets to disk
+    pub fn save(&self) -> Result<(), String> {
+        let path = Self::secrets_path()?;
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create secrets directory: {}", e))?;
+        }
+        let content = serde_json::to_string_pretty(self)
+            .map_err(|e| format!("Failed to serialize secrets: {}", e))?;
+        fs::write(&path, content)
+            .map_err(|e| format!("Failed to write secrets: {}", e))
+    }
+
+    /// Set auth token for a server_node_id
+    pub fn set_token(&mut self, server_node_id: &str, auth_token: &str) -> Result<(), String> {
+        self.auth_tokens.insert(server_node_id.to_string(), auth_token.to_string());
+        self.save()
+    }
+
+    /// Get auth token for a server_node_id
+    pub fn get_token(&self, server_node_id: &str) -> Option<&String> {
+        self.auth_tokens.get(server_node_id)
+    }
+
+    /// Remove auth token for a server_node_id
+    pub fn remove_token(&mut self, server_node_id: &str) -> Result<(), String> {
+        self.auth_tokens.remove(server_node_id);
+        self.save()
+    }
+}
+
+// ============================================================================
+// Helpers
+// ============================================================================
 
 /// Get the application data directory path
 fn app_data_dir() -> Result<PathBuf, String> {
@@ -136,6 +247,13 @@ impl AppSettings {
     }
 }
 
+/// Config store managing server groups and forwardings
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ConfigStore {
+    pub server_groups: HashMap<Uuid, ServerGroup>,
+    pub forwardings: HashMap<Uuid, Forwarding>,
+}
+
 impl ConfigStore {
     /// Get the config store file path
     fn store_path() -> Result<PathBuf, String> {
@@ -167,42 +285,222 @@ impl ConfigStore {
             .map_err(|e| format!("Failed to write config store: {}", e))
     }
 
-    /// Get all configs as a list
-    pub fn list(&self) -> Vec<StoredConfig> {
-        let mut configs: Vec<_> = self.configs.values().cloned().collect();
-        configs.sort_by(|a, b| a.name.cmp(&b.name));
-        configs
+    /// Restore auth tokens from SecretsStore after loading
+    /// This populates the auth_token field for each server group from secrets.json
+    pub fn restore_auth_tokens(&mut self, secrets: &SecretsStore) {
+        for group in self.server_groups.values_mut() {
+            group.auth_token = secrets.get_token(&group.server_node_id).cloned();
+        }
     }
 
-    /// Get a config by ID
-    pub fn get(&self, id: Uuid) -> Option<&StoredConfig> {
-        self.configs.get(&id)
+    // ============================================================================
+    // Server Group CRUD
+    // ============================================================================
+
+    /// Get all server groups as a list
+    pub fn list_server_groups(&self) -> Vec<ServerGroup> {
+        let mut groups: Vec<_> = self.server_groups.values().cloned().collect();
+        groups.sort_by(|a, b| a.name.cmp(&b.name));
+        groups
     }
 
-    /// Add or update a config
-    pub fn upsert(&mut self, mut config: StoredConfig) -> Result<Uuid, String> {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+    /// Get a server group by ID
+    pub fn get_server_group(&self, id: Uuid) -> Option<&ServerGroup> {
+        self.server_groups.get(&id)
+    }
 
-        if self.configs.contains_key(&config.id) {
-            config.updated_at = now;
+    /// Add or update a server group
+    pub fn upsert_server_group(&mut self, mut group: ServerGroup) -> Result<Uuid, String> {
+        let now = current_timestamp();
+
+        if let Some(existing) = self.server_groups.get(&group.id) {
+            group.created_at = existing.created_at;
+            group.updated_at = now;
         } else {
-            config.created_at = now;
-            config.updated_at = now;
+            group.created_at = now;
+            group.updated_at = now;
         }
 
-        let id = config.id;
-        self.configs.insert(id, config);
+        let id = group.id;
+        self.server_groups.insert(id, group);
         self.save()?;
         Ok(id)
     }
 
-    /// Delete a config by ID
-    pub fn delete(&mut self, id: Uuid) -> Result<(), String> {
-        self.configs.remove(&id);
+    /// Delete a server group by ID
+    /// Returns error if the group has forwardings
+    pub fn delete_server_group(&mut self, id: Uuid) -> Result<(), String> {
+        // Check if any forwardings reference this group
+        let has_forwardings = self.forwardings.values().any(|f| f.server_group_id == id);
+        if has_forwardings {
+            return Err("Cannot delete server group with existing forwardings. Delete all forwardings first.".to_string());
+        }
+
+        self.server_groups.remove(&id);
         self.save()
+    }
+
+    // ============================================================================
+    // Forwarding CRUD
+    // ============================================================================
+
+    /// Get all forwardings as a list
+    pub fn list_forwardings(&self) -> Vec<Forwarding> {
+        let mut forwardings: Vec<_> = self.forwardings.values().cloned().collect();
+        forwardings.sort_by(|a, b| a.name.cmp(&b.name));
+        forwardings
+    }
+
+    /// Get all forwardings for a specific server group
+    pub fn list_forwardings_by_group(&self, server_group_id: Uuid) -> Vec<Forwarding> {
+        let mut forwardings: Vec<_> = self.forwardings.values()
+            .filter(|f| f.server_group_id == server_group_id)
+            .cloned()
+            .collect();
+        forwardings.sort_by(|a, b| a.name.cmp(&b.name));
+        forwardings
+    }
+
+    /// Get a forwarding by ID
+    pub fn get_forwarding(&self, id: Uuid) -> Option<&Forwarding> {
+        self.forwardings.get(&id)
+    }
+
+    /// Add or update a forwarding
+    pub fn upsert_forwarding(&mut self, mut forwarding: Forwarding) -> Result<Uuid, String> {
+        // Verify server group exists
+        if !self.server_groups.contains_key(&forwarding.server_group_id) {
+            return Err("Server group not found".to_string());
+        }
+
+        let now = current_timestamp();
+
+        if let Some(existing) = self.forwardings.get(&forwarding.id) {
+            forwarding.created_at = existing.created_at;
+            forwarding.updated_at = now;
+        } else {
+            forwarding.created_at = now;
+            forwarding.updated_at = now;
+        }
+
+        let id = forwarding.id;
+        self.forwardings.insert(id, forwarding);
+        self.save()?;
+        Ok(id)
+    }
+
+    /// Delete a forwarding by ID
+    pub fn delete_forwarding(&mut self, id: Uuid) -> Result<(), String> {
+        self.forwardings.remove(&id);
+        self.save()
+    }
+
+    // ============================================================================
+    // Config Building
+    // ============================================================================
+
+    /// Build a TunnelClientConfig from a forwarding ID
+    /// Combines the server group settings with the forwarding's source/target
+    pub fn build_tunnel_config(&self, forwarding_id: Uuid) -> Result<TunnelClientConfig, String> {
+        let forwarding = self.get_forwarding(forwarding_id)
+            .ok_or_else(|| "Forwarding not found".to_string())?;
+
+        let group = self.get_server_group(forwarding.server_group_id)
+            .ok_or_else(|| "Server group not found".to_string())?;
+
+        let mut config = TunnelClientConfig::new(group.server_node_id.clone());
+        config.iroh.request_source = forwarding.source.clone();
+        config.iroh.target = forwarding.target.clone();
+        config.iroh.auth_token = group.auth_token.clone();
+        config.iroh.relay_urls = group.relay_urls.clone();
+
+        Ok(config)
+    }
+
+    // ============================================================================
+    // Export/Import
+    // ============================================================================
+
+    /// Export all configs (without auth tokens, since auth_token has #[serde(skip)])
+    pub fn export(&self) -> ExportData {
+        ExportData {
+            version: 1,
+            exported_at: current_timestamp(),
+            config: self.clone(),
+        }
+    }
+
+    /// Import configs from export data
+    /// Auth tokens are NOT imported (they're not in the export) - users must add them manually
+    pub fn import(&mut self, data: ExportData) -> ImportResult {
+        let mut result = ImportResult {
+            success: true,
+            groups_imported: 0,
+            forwardings_imported: 0,
+            groups_skipped: 0,
+            forwardings_skipped: 0,
+            errors: vec![],
+        };
+
+        // Validate version
+        if data.version != 1 {
+            result.success = false;
+            result.errors.push(format!("Unsupported export version: {}", data.version));
+            return result;
+        }
+
+        let now = current_timestamp();
+
+        // Import server groups (auth_token will be None since it's not serialized)
+        for (id, mut group) in data.config.server_groups {
+            let is_update = self.server_groups.contains_key(&id);
+            if is_update {
+                let existing = self.server_groups.get(&id).unwrap();
+                group.created_at = existing.created_at;
+                group.updated_at = now;
+            } else {
+                group.created_at = now;
+                group.updated_at = now;
+            }
+            // auth_token is already None from deserialization (due to #[serde(skip)])
+
+            self.server_groups.insert(id, group);
+            result.groups_imported += 1;
+        }
+
+        // Import forwardings
+        for (id, mut forwarding) in data.config.forwardings {
+            // Verify server group exists
+            if !self.server_groups.contains_key(&forwarding.server_group_id) {
+                result.errors.push(format!(
+                    "Server group '{}' not found for forwarding '{}'",
+                    forwarding.server_group_id, forwarding.name
+                ));
+                result.forwardings_skipped += 1;
+                continue;
+            }
+
+            let is_update = self.forwardings.contains_key(&id);
+            if is_update {
+                let existing = self.forwardings.get(&id).unwrap();
+                forwarding.created_at = existing.created_at;
+                forwarding.updated_at = now;
+            } else {
+                forwarding.created_at = now;
+                forwarding.updated_at = now;
+            }
+
+            self.forwardings.insert(id, forwarding);
+            result.forwardings_imported += 1;
+        }
+
+        // Save the updated config store
+        if let Err(e) = self.save() {
+            result.success = false;
+            result.errors.push(format!("Failed to save config store: {}", e));
+        }
+
+        result
     }
 }
 
@@ -216,10 +514,49 @@ mod tests {
         config.iroh.request_source = Some("tcp://127.0.0.1:22".to_string());
         config.iroh.target = Some("127.0.0.1:2222".to_string());
         config.iroh.auth_token = Some("iXXXXXXXXXXXXXXXXX".to_string());
-        
+
         let toml = config.to_toml().unwrap();
         assert!(toml.contains("role = \"client\""));
         assert!(toml.contains("mode = \"iroh\""));
         assert!(toml.contains("server_node_id = \"test123\""));
+    }
+
+    #[test]
+    fn test_build_tunnel_config() {
+        let mut store = ConfigStore::default();
+
+        // Create a server group
+        let group_id = Uuid::new_v4();
+        let group = ServerGroup {
+            id: group_id,
+            name: "Test Group".to_string(),
+            server_node_id: "test_node_123".to_string(),
+            auth_token: Some("iXXXXXXXXXXXXXXXXX".to_string()),
+            relay_urls: vec!["https://relay.example.com".to_string()],
+            created_at: 0,
+            updated_at: 0,
+        };
+        store.server_groups.insert(group_id, group);
+
+        // Create a forwarding
+        let fwd_id = Uuid::new_v4();
+        let forwarding = Forwarding {
+            id: fwd_id,
+            server_group_id: group_id,
+            name: "SSH".to_string(),
+            source: Some("tcp://127.0.0.1:22".to_string()),
+            target: Some("127.0.0.1:2222".to_string()),
+            created_at: 0,
+            updated_at: 0,
+        };
+        store.forwardings.insert(fwd_id, forwarding);
+
+        // Build config
+        let config = store.build_tunnel_config(fwd_id).unwrap();
+        assert_eq!(config.iroh.server_node_id, "test_node_123");
+        assert_eq!(config.iroh.request_source, Some("tcp://127.0.0.1:22".to_string()));
+        assert_eq!(config.iroh.target, Some("127.0.0.1:2222".to_string()));
+        assert_eq!(config.iroh.auth_token, Some("iXXXXXXXXXXXXXXXXX".to_string()));
+        assert_eq!(config.iroh.relay_urls.len(), 1);
     }
 }

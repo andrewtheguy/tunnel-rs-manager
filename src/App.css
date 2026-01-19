@@ -118,6 +118,12 @@ body {
   flex-shrink: 0;
 }
 
+.export-import-row {
+  display: flex;
+  gap: 8px;
+  margin: 8px 0 0 0;
+}
+
 .btn-small {
   padding: 4px 10px;
   font-size: 11px;

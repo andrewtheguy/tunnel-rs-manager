@@ -1,40 +1,83 @@
 // Type definitions for tunnel-rs-manager
 
-export interface IrohConfig {
-  server_node_id: string;
-  request_source?: string;
-  target?: string;
-  relay_urls?: string[];
-  dns_server?: string;
-  socks5_proxy?: string;
-  auth_token?: string;
-  auth_token_file?: string;
-  transport?: {
-    congestion_controller?: string;
-    receive_window?: number;
-    send_window?: number;
-  };
-}
+// ============================================================================
+// Server Group Types
+// ============================================================================
 
-/** Valid tunnel role values */
-export type TunnelRole = 'client';
-
-/** Valid tunnel mode values */
-export type TunnelMode = 'iroh';
-
-export interface TunnelClientConfig {
-  role: TunnelRole;
-  mode: TunnelMode;
-  iroh: IrohConfig;
-}
-
-export interface StoredConfig {
+/** Server Group: Named collection of shared connection settings */
+export interface ServerGroup {
   id: string;
   name: string;
-  config: TunnelClientConfig;
+  server_node_id: string;
+  auth_token?: string;
+  relay_urls: string[];
   created_at: number;
   updated_at: number;
 }
+
+/** Form data for creating/editing server groups */
+export interface ServerGroupFormData {
+  name: string;
+  server_node_id: string;
+  auth_token: string;
+  relay_urls: string; // Comma-separated for form input
+}
+
+export const emptyServerGroupForm: ServerGroupFormData = {
+  name: '',
+  server_node_id: '',
+  auth_token: '',
+  relay_urls: '',
+};
+
+export function serverGroupToForm(group: ServerGroup): ServerGroupFormData {
+  return {
+    name: group.name,
+    server_node_id: group.server_node_id,
+    auth_token: group.auth_token ?? '',
+    relay_urls: (group.relay_urls ?? []).join(', '),
+  };
+}
+
+// ============================================================================
+// Forwarding Types
+// ============================================================================
+
+/** Forwarding: Individual named source/target pair within a server group */
+export interface Forwarding {
+  id: string;
+  server_group_id: string;
+  name: string;
+  source?: string;
+  target?: string;
+  created_at: number;
+  updated_at: number;
+}
+
+/** Form data for creating/editing forwardings */
+export interface ForwardingFormData {
+  name: string;
+  source: string;
+  target: string;
+}
+
+export const emptyForwardingForm: ForwardingFormData = {
+  name: '',
+  source: '',
+  target: '',
+};
+
+export function forwardingToForm(forwarding: Forwarding): ForwardingFormData {
+  return {
+    name: forwarding.name,
+    source: forwarding.source ?? '',
+    target: forwarding.target ?? '',
+  };
+}
+
+// ============================================================================
+// Tunnel Instance Types
+// ============================================================================
 
 export type TunnelStatus = 'stopped' | 'starting' | 'running' | 'error';
 
@@ -45,38 +88,36 @@ export interface LogEntry {
 }
 
 export interface TunnelInstance {
-  config_id: string;
-  config_name: string;
+  forwarding_id: string;
+  forwarding_name: string;
+  server_group_name: string;
   status: TunnelStatus;
   logs: LogEntry[];
 }
 
-// Form data for creating/editing configs
-export interface ConfigFormData {
-  name: string;
-  server_node_id: string;
-  source: string;
-  target: string;
-  auth_token: string;
-  relay_urls: string;  // Comma-separated for form input
+// ============================================================================
+// Export/Import Types
+// ============================================================================
+
+/** Config store structure (same as configs.json) */
+export interface ConfigStore {
+  server_groups: Record<string, ServerGroup>;
+  forwardings: Record<string, Forwarding>;
 }
 
-export const emptyConfigForm: ConfigFormData = {
-  name: '',
-  server_node_id: '',
-  source: '',
-  target: '',
-  auth_token: '',
-  relay_urls: '',
-};
+/** Export data format (shareable, no secrets) */
+export interface ExportData {
+  version: number;
+  exported_at: number;
+  config: ConfigStore;
+}
 
-export function storedConfigToForm(config: StoredConfig): ConfigFormData {
-  return {
-    name: config.name,
-    server_node_id: config.config.iroh.server_node_id,
-    source: config.config.iroh.request_source || '',
-    target: config.config.iroh.target || '',
-    auth_token: config.config.iroh.auth_token || '',
-    relay_urls: config.config.iroh.relay_urls?.join(', ') ?? '',
-  };
+/** Result of import operation */
+export interface ImportResult {
+  success: boolean;
+  groups_imported: number;
+  forwardings_imported: number;
+  groups_skipped: number;
+  forwardings_skipped: number;
+  errors: string[];
 }
