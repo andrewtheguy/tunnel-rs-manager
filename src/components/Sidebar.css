@@ -90,6 +90,172 @@
     background: rgba(99, 102, 241, 0.2);
 }
 
+/* Stats bar */
+.sidebar-stats {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 10px 20px;
+    font-size: 12px;
+    color: #6b7280;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.sidebar-stats .separator {
+    color: #4b5563;
+}
+
+.sidebar-stats .running-count {
+    color: #10b981;
+    font-weight: 500;
+}
+
+/* Group list (hierarchical) */
+.group-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.group-item {
+    display: flex;
+    flex-direction: column;
+}
+
+.group-header-row {
+    display: flex;
+    align-items: center;
+    padding: 10px 12px;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.2s;
+    border: 1px solid transparent;
+}
+
+.group-header-row:hover {
+    background: rgba(255, 255, 255, 0.04);
+}
+
+.group-header-row.selected {
+    background: rgba(99, 102, 241, 0.15);
+    border-color: rgba(99, 102, 241, 0.3);
+}
+
+.group-header-row.active {
+    border-left: 3px solid #10b981;
+}
+
+.collapse-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    margin-right: 8px;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: #6b7280;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.collapse-btn:hover {
+    background: rgba(255, 255, 255, 0.1);
+    color: #9ca3af;
+}
+
+.group-header-content {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+    flex: 1;
+}
+
+.group-name {
+    font-size: 14px;
+    font-weight: 500;
+    color: #f3f4f6;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.group-info {
+    font-size: 11px;
+    color: #6b7280;
+}
+
+.group-info .running-indicator {
+    color: #10b981;
+}
+
+/* Forwarding list (nested under groups) */
+.forwarding-list {
+    list-style: none;
+    margin: 0;
+    padding: 4px 0 4px 28px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.forwarding-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.2s;
+    border: 1px solid transparent;
+}
+
+.forwarding-item:hover {
+    background: rgba(255, 255, 255, 0.04);
+}
+
+.forwarding-item.selected {
+    background: rgba(99, 102, 241, 0.12);
+    border-color: rgba(99, 102, 241, 0.25);
+}
+
+.forwarding-item.active {
+    border-left: 2px solid #10b981;
+}
+
+.forwarding-content {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 0;
+    flex: 1;
+}
+
+.forwarding-name {
+    font-size: 13px;
+    font-weight: 500;
+    color: #e5e7eb;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.forwarding-target {
+    font-size: 10px;
+    color: #6b7280;
+    font-family: 'SF Mono', monospace;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Legacy config list styles (can be removed if not used) */
 .config-list {
     list-style: none;
     margin: 0;
