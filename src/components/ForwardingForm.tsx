@@ -82,10 +82,13 @@ export function ForwardingForm({ initial, serverGroupName, onSubmit, onCancel, i
                         <label htmlFor="source">Source Address</label>
                         <input
                             id="source"
-                            type="url"
+                            type="text"
                             value={form.source}
                             onChange={handleChange('source')}
                             placeholder="tcp://127.0.0.1:22"
+                            autoCapitalize="none"
+                            autoCorrect="off"
+                            spellCheck="false"
                         />
                         <span className="help-text">Remote service to tunnel</span>
                     </div>
@@ -94,10 +97,13 @@ export function ForwardingForm({ initial, serverGroupName, onSubmit, onCancel, i
                         <label htmlFor="target">Local Target</label>
                         <input
                             id="target"
-                            type="url"
+                            type="text"
                             value={form.target}
                             onChange={handleChange('target')}
                             placeholder="127.0.0.1:2222"
+                            autoCapitalize="none"
+                            autoCorrect="off"
+                            spellCheck="false"
                         />
                         <span className="help-text">Local address to listen on</span>
                     </div>
