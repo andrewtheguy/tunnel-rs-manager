@@ -19,6 +19,7 @@ export function useServerGroups() {
     const [mutating, setMutating] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const mutationCountRef = useRef(0);
+    const mountedRef = useRef(true);
 
     const startMutation = useCallback(() => {
         mutationCountRef.current += 1;
@@ -38,16 +39,24 @@ export function useServerGroups() {
             setLoading(true);
             setError(null);
             const result = await invoke<ServerGroup[]>('list_server_groups');
+            if (!mountedRef.current) return;
             setServerGroups(result);
         } catch (e) {
+            if (!mountedRef.current) return;
             setError(e instanceof Error ? e.message : String(e));
         } finally {
-            setLoading(false);
+            if (mountedRef.current) {
+                setLoading(false);
+            }
         }
     }, []);
 
     useEffect(() => {
+        mountedRef.current = true;
         refresh();
+        return () => {
+            mountedRef.current = false;
+        };
     }, [refresh]);
 
     const createServerGroup = useCallback(async (form: ServerGroupFormData): Promise<ServerGroup> => {
