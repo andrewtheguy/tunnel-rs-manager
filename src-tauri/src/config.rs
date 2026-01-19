@@ -111,35 +111,13 @@ pub struct Forwarding {
 // Export/Import Data Structures
 // ============================================================================
 
-/// Server group for export (without auth_token)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ExportServerGroup {
-    pub id: String,
-    pub name: String,
-    pub server_node_id: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub relay_urls: Vec<String>,
-}
-
-/// Forwarding for export
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ExportForwarding {
-    pub id: String,
-    pub server_group_id: String,
-    pub name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub source: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub target: Option<String>,
-}
-
 /// Export data format (shareable, no secrets)
+/// The `config` field has the same structure as configs.json
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExportData {
     pub version: u32,
     pub exported_at: u64,
-    pub server_groups: Vec<ExportServerGroup>,
-    pub forwardings: Vec<ExportForwarding>,
+    pub config: ConfigStore,
 }
 
 /// Result of import operation
@@ -439,27 +417,8 @@ impl ConfigStore {
     // Export/Import
     // ============================================================================
 
-    /// Export all configs (without auth tokens)
+    /// Export all configs (without auth tokens, since auth_token has #[serde(skip)])
     pub fn export(&self) -> ExportData {
-        let server_groups: Vec<ExportServerGroup> = self.server_groups.values()
-            .map(|g| ExportServerGroup {
-                id: g.id.to_string(),
-                name: g.name.clone(),
-                server_node_id: g.server_node_id.clone(),
-                relay_urls: g.relay_urls.clone(),
-            })
-            .collect();
-
-        let forwardings: Vec<ExportForwarding> = self.forwardings.values()
-            .map(|f| ExportForwarding {
-                id: f.id.to_string(),
-                server_group_id: f.server_group_id.to_string(),
-                name: f.name.clone(),
-                source: f.source.clone(),
-                target: f.target.clone(),
-            })
-            .collect();
-
         let exported_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -468,14 +427,13 @@ impl ConfigStore {
         ExportData {
             version: 1,
             exported_at,
-            server_groups,
-            forwardings,
+            config: self.clone(),
         }
     }
 
     /// Import configs from export data
-    /// Restores auth tokens from SecretsStore where server_node_id matches
-    pub fn import(&mut self, data: ExportData, secrets: &SecretsStore) -> ImportResult {
+    /// Auth tokens are NOT imported (they're not in the export) - users must add them manually
+    pub fn import(&mut self, data: ExportData) -> ImportResult {
         let mut result = ImportResult {
             success: true,
             groups_imported: 0,
@@ -497,89 +455,44 @@ impl ConfigStore {
             .unwrap_or_default()
             .as_secs();
 
-        // Import server groups
-        for export_group in data.server_groups {
-            let id = match Uuid::parse_str(&export_group.id) {
-                Ok(id) => id,
-                Err(e) => {
-                    result.errors.push(format!("Invalid group UUID '{}': {}", export_group.id, e));
-                    result.groups_skipped += 1;
-                    continue;
-                }
-            };
-
-            // Restore auth_token from secrets if available
-            let auth_token = secrets.get_token(&export_group.server_node_id).cloned();
-
+        // Import server groups (auth_token will be None since it's not serialized)
+        for (id, mut group) in data.config.server_groups {
             let is_update = self.server_groups.contains_key(&id);
-            let (created_at, updated_at) = if is_update {
+            if is_update {
                 let existing = self.server_groups.get(&id).unwrap();
-                (existing.created_at, now)
+                group.created_at = existing.created_at;
+                group.updated_at = now;
             } else {
-                (now, now)
-            };
-
-            let group = ServerGroup {
-                id,
-                name: export_group.name,
-                server_node_id: export_group.server_node_id,
-                auth_token,
-                relay_urls: export_group.relay_urls,
-                created_at,
-                updated_at,
-            };
+                group.created_at = now;
+                group.updated_at = now;
+            }
+            // auth_token is already None from deserialization (due to #[serde(skip)])
 
             self.server_groups.insert(id, group);
             result.groups_imported += 1;
         }
 
         // Import forwardings
-        for export_fwd in data.forwardings {
-            let id = match Uuid::parse_str(&export_fwd.id) {
-                Ok(id) => id,
-                Err(e) => {
-                    result.errors.push(format!("Invalid forwarding UUID '{}': {}", export_fwd.id, e));
-                    result.forwardings_skipped += 1;
-                    continue;
-                }
-            };
-
-            let server_group_id = match Uuid::parse_str(&export_fwd.server_group_id) {
-                Ok(id) => id,
-                Err(e) => {
-                    result.errors.push(format!("Invalid server_group_id '{}': {}", export_fwd.server_group_id, e));
-                    result.forwardings_skipped += 1;
-                    continue;
-                }
-            };
-
+        for (id, mut forwarding) in data.config.forwardings {
             // Verify server group exists
-            if !self.server_groups.contains_key(&server_group_id) {
+            if !self.server_groups.contains_key(&forwarding.server_group_id) {
                 result.errors.push(format!(
                     "Server group '{}' not found for forwarding '{}'",
-                    export_fwd.server_group_id, export_fwd.name
+                    forwarding.server_group_id, forwarding.name
                 ));
                 result.forwardings_skipped += 1;
                 continue;
             }
 
             let is_update = self.forwardings.contains_key(&id);
-            let (created_at, updated_at) = if is_update {
+            if is_update {
                 let existing = self.forwardings.get(&id).unwrap();
-                (existing.created_at, now)
+                forwarding.created_at = existing.created_at;
+                forwarding.updated_at = now;
             } else {
-                (now, now)
-            };
-
-            let forwarding = Forwarding {
-                id,
-                server_group_id,
-                name: export_fwd.name,
-                source: export_fwd.source,
-                target: export_fwd.target,
-                created_at,
-                updated_at,
-            };
+                forwarding.created_at = now;
+                forwarding.updated_at = now;
+            }
 
             self.forwardings.insert(id, forwarding);
             result.forwardings_imported += 1;

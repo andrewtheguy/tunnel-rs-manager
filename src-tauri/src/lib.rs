@@ -331,12 +331,9 @@ async fn import_configs(state: State<'_, AppState>, json: String) -> Result<Impo
     let export_data: ExportData = serde_json::from_str(&json)
         .map_err(|e| format!("Invalid import data: {}", e))?;
 
-    // Load secrets store
-    let secrets = state.secrets_store.lock().await;
-
-    // Import configs
+    // Import configs (without auth tokens - users must add them manually)
     let mut store = state.config_store.lock().await;
-    let result = store.import(export_data, &secrets);
+    let result = store.import(export_data);
 
     Ok(result)
 }

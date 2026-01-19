@@ -99,29 +99,17 @@ export interface TunnelInstance {
 // Export/Import Types
 // ============================================================================
 
-/** Server group for export (without auth_token) */
-export interface ExportServerGroup {
-  id: string;
-  name: string;
-  server_node_id: string;
-  relay_urls?: string[];
-}
-
-/** Forwarding for export */
-export interface ExportForwarding {
-  id: string;
-  server_group_id: string;
-  name: string;
-  source?: string;
-  target?: string;
+/** Config store structure (same as configs.json) */
+export interface ConfigStore {
+  server_groups: Record<string, ServerGroup>;
+  forwardings: Record<string, Forwarding>;
 }
 
 /** Export data format (shareable, no secrets) */
 export interface ExportData {
   version: number;
   exported_at: number;
-  server_groups: ExportServerGroup[];
-  forwardings: ExportForwarding[];
+  config: ConfigStore;
 }
 
 /** Result of import operation */
