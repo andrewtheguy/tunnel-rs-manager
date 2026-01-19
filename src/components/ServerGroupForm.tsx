@@ -35,9 +35,9 @@ function luhnModNChecksum(body: string): string {
 }
 
 function validateAuthToken(token: string): string | null {
-    // Empty token is valid (optional field)
+    // Auth token is required
     if (!token) {
-        return null;
+        return 'Auth token is required';
     }
 
     // Must be exactly 18 characters
@@ -171,20 +171,20 @@ export function ServerGroupForm({ initial, onSubmit, onCancel, isEditing = false
                 </div>
 
                 <div className="form-group">
-                    <label htmlFor="auth_token">Auth Token</label>
+                    <label htmlFor="auth_token">Auth Token *</label>
                     <input
                         id="auth_token"
                         type="password"
                         value={form.auth_token}
                         onChange={handleChange('auth_token')}
                         placeholder="iXXXXXXXXXXXXXXXXX"
-                        className={authTokenError ? 'input-error' : ''}
+                        className={authTokenError && form.auth_token ? 'input-error' : ''}
                         autoCapitalize="none"
                         autoComplete="off"
                         autoCorrect="off"
                         spellCheck={false}
                     />
-                    {authTokenError ? (
+                    {authTokenError && form.auth_token ? (
                         <span className="field-error">{authTokenError}</span>
                     ) : (
                         <span className="help-text">18-character token from server admin</span>

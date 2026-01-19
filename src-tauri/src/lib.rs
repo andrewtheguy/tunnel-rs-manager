@@ -93,9 +93,13 @@ async fn create_server_group(
     state: State<'_, AppState>,
     name: String,
     server_node_id: String,
-    auth_token: Option<String>,
+    auth_token: String,
     relay_urls: Option<Vec<String>>,
 ) -> Result<ServerGroup, String> {
+    if auth_token.is_empty() {
+        return Err("Auth token is required".to_string());
+    }
+
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| format!("System time error: {}", e))?
@@ -105,16 +109,16 @@ async fn create_server_group(
         id: Uuid::new_v4(),
         name,
         server_node_id: server_node_id.clone(),
-        auth_token: auth_token.clone(),
+        auth_token: Some(auth_token.clone()),
         relay_urls: relay_urls.unwrap_or_default(),
         created_at: now,
         updated_at: now,
     };
 
-    // Save auth token to secrets store if present
-    if let Some(ref token) = auth_token {
+    // Save auth token to secrets store
+    {
         let mut secrets = state.secrets_store.lock().await;
-        secrets.set_token(&server_node_id, token)?;
+        secrets.set_token(&server_node_id, &auth_token)?;
     }
 
     let mut store = state.config_store.lock().await;
@@ -128,9 +132,13 @@ async fn update_server_group(
     id: String,
     name: String,
     server_node_id: String,
-    auth_token: Option<String>,
+    auth_token: String,
     relay_urls: Option<Vec<String>>,
 ) -> Result<ServerGroup, String> {
+    if auth_token.is_empty() {
+        return Err("Auth token is required".to_string());
+    }
+
     let uuid = Uuid::parse_str(&id).map_err(|e| format!("Invalid UUID: {}", e))?;
 
     let (created_at, relay_urls_final) = {
@@ -150,16 +158,16 @@ async fn update_server_group(
         id: uuid,
         name,
         server_node_id: server_node_id.clone(),
-        auth_token: auth_token.clone(),
+        auth_token: Some(auth_token.clone()),
         relay_urls: relay_urls_final,
         created_at,
         updated_at: now,
     };
 
-    // Save auth token to secrets store if present
-    if let Some(ref token) = auth_token {
+    // Save auth token to secrets store
+    {
         let mut secrets = state.secrets_store.lock().await;
-        secrets.set_token(&server_node_id, token)?;
+        secrets.set_token(&server_node_id, &auth_token)?;
     }
 
     let mut store = state.config_store.lock().await;
@@ -368,6 +376,14 @@ async fn start_tunnel(state: State<'_, AppState>, forwarding_id: String) -> Resu
             .get_server_group(forwarding.server_group_id)
             .ok_or_else(|| "Server group not found".to_string())?;
         let server_group_name = group.name.clone();
+
+        // Require auth token to start tunnel
+        if group.auth_token.is_none() {
+            return Err(format!(
+                "Auth token is required. Please edit server group '{}' and add an auth token.",
+                group.name
+            ));
+        }
 
         let config = store.build_tunnel_config(uuid)?;
 

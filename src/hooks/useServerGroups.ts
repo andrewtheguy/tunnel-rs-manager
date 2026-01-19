@@ -56,7 +56,7 @@ export function useServerGroups() {
             const group = await invoke<ServerGroup>('create_server_group', {
                 name: form.name,
                 serverNodeId: form.server_node_id,
-                authToken: form.auth_token || null,
+                authToken: form.auth_token,
                 relayUrls: parseRelayUrls(form.relay_urls),
             });
 
@@ -79,7 +79,7 @@ export function useServerGroups() {
                 id,
                 name: form.name,
                 serverNodeId: form.server_node_id,
-                authToken: form.auth_token || null,
+                authToken: form.auth_token,
                 relayUrls: parseRelayUrls(form.relay_urls),
             });
 
