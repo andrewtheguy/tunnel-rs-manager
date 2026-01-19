@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 /// Iroh transport tuning configuration
@@ -104,6 +105,116 @@ pub struct Forwarding {
     #[serde(default)]
     pub updated_at: u64,
 }
+
+// ============================================================================
+// Export/Import Data Structures
+// ============================================================================
+
+/// Server group for export (without auth_token)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExportServerGroup {
+    pub id: String,
+    pub name: String,
+    pub server_node_id: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub relay_urls: Vec<String>,
+}
+
+/// Forwarding for export
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExportForwarding {
+    pub id: String,
+    pub server_group_id: String,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+}
+
+/// Export data format (shareable, no secrets)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExportData {
+    pub version: u32,
+    pub exported_at: u64,
+    pub server_groups: Vec<ExportServerGroup>,
+    pub forwardings: Vec<ExportForwarding>,
+}
+
+/// Result of import operation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportResult {
+    pub success: bool,
+    pub groups_imported: usize,
+    pub forwardings_imported: usize,
+    pub groups_skipped: usize,
+    pub forwardings_skipped: usize,
+    pub errors: Vec<String>,
+}
+
+// ============================================================================
+// Secrets Store
+// ============================================================================
+
+/// Secrets store for auth tokens (server_node_id -> auth_token)
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SecretsStore {
+    pub auth_tokens: HashMap<String, String>,
+}
+
+impl SecretsStore {
+    /// Get the secrets file path
+    fn secrets_path() -> Result<PathBuf, String> {
+        Ok(app_data_dir()?.join("secrets.json"))
+    }
+
+    /// Load secrets from disk
+    pub fn load() -> Result<Self, String> {
+        let path = Self::secrets_path()?;
+        if !path.exists() {
+            return Ok(Self::default());
+        }
+        let content = fs::read_to_string(&path)
+            .map_err(|e| format!("Failed to read secrets: {}", e))?;
+        serde_json::from_str(&content)
+            .map_err(|e| format!("Failed to parse secrets: {}", e))
+    }
+
+    /// Save secrets to disk
+    pub fn save(&self) -> Result<(), String> {
+        let path = Self::secrets_path()?;
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create secrets directory: {}", e))?;
+        }
+        let content = serde_json::to_string_pretty(self)
+            .map_err(|e| format!("Failed to serialize secrets: {}", e))?;
+        fs::write(&path, content)
+            .map_err(|e| format!("Failed to write secrets: {}", e))
+    }
+
+    /// Set auth token for a server_node_id
+    pub fn set_token(&mut self, server_node_id: &str, auth_token: &str) -> Result<(), String> {
+        self.auth_tokens.insert(server_node_id.to_string(), auth_token.to_string());
+        self.save()
+    }
+
+    /// Get auth token for a server_node_id
+    pub fn get_token(&self, server_node_id: &str) -> Option<&String> {
+        self.auth_tokens.get(server_node_id)
+    }
+
+    /// Remove auth token for a server_node_id
+    #[allow(dead_code)]
+    pub fn remove_token(&mut self, server_node_id: &str) -> Result<(), String> {
+        self.auth_tokens.remove(server_node_id);
+        self.save()
+    }
+}
+
+// ============================================================================
+// Helpers
+// ============================================================================
 
 /// Get the application data directory path
 fn app_data_dir() -> Result<PathBuf, String> {
@@ -314,6 +425,165 @@ impl ConfigStore {
         config.iroh.relay_urls = group.relay_urls.clone();
 
         Ok(config)
+    }
+
+    // ============================================================================
+    // Export/Import
+    // ============================================================================
+
+    /// Export all configs (without auth tokens)
+    pub fn export(&self) -> ExportData {
+        let server_groups: Vec<ExportServerGroup> = self.server_groups.values()
+            .map(|g| ExportServerGroup {
+                id: g.id.to_string(),
+                name: g.name.clone(),
+                server_node_id: g.server_node_id.clone(),
+                relay_urls: g.relay_urls.clone(),
+            })
+            .collect();
+
+        let forwardings: Vec<ExportForwarding> = self.forwardings.values()
+            .map(|f| ExportForwarding {
+                id: f.id.to_string(),
+                server_group_id: f.server_group_id.to_string(),
+                name: f.name.clone(),
+                source: f.source.clone(),
+                target: f.target.clone(),
+            })
+            .collect();
+
+        let exported_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        ExportData {
+            version: 1,
+            exported_at,
+            server_groups,
+            forwardings,
+        }
+    }
+
+    /// Import configs from export data
+    /// Restores auth tokens from SecretsStore where server_node_id matches
+    pub fn import(&mut self, data: ExportData, secrets: &SecretsStore) -> ImportResult {
+        let mut result = ImportResult {
+            success: true,
+            groups_imported: 0,
+            forwardings_imported: 0,
+            groups_skipped: 0,
+            forwardings_skipped: 0,
+            errors: vec![],
+        };
+
+        // Validate version
+        if data.version != 1 {
+            result.success = false;
+            result.errors.push(format!("Unsupported export version: {}", data.version));
+            return result;
+        }
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        // Import server groups
+        for export_group in data.server_groups {
+            let id = match Uuid::parse_str(&export_group.id) {
+                Ok(id) => id,
+                Err(e) => {
+                    result.errors.push(format!("Invalid group UUID '{}': {}", export_group.id, e));
+                    result.groups_skipped += 1;
+                    continue;
+                }
+            };
+
+            // Restore auth_token from secrets if available
+            let auth_token = secrets.get_token(&export_group.server_node_id).cloned();
+
+            let is_update = self.server_groups.contains_key(&id);
+            let (created_at, updated_at) = if is_update {
+                let existing = self.server_groups.get(&id).unwrap();
+                (existing.created_at, now)
+            } else {
+                (now, now)
+            };
+
+            let group = ServerGroup {
+                id,
+                name: export_group.name,
+                server_node_id: export_group.server_node_id,
+                auth_token,
+                relay_urls: export_group.relay_urls,
+                created_at,
+                updated_at,
+            };
+
+            self.server_groups.insert(id, group);
+            result.groups_imported += 1;
+        }
+
+        // Import forwardings
+        for export_fwd in data.forwardings {
+            let id = match Uuid::parse_str(&export_fwd.id) {
+                Ok(id) => id,
+                Err(e) => {
+                    result.errors.push(format!("Invalid forwarding UUID '{}': {}", export_fwd.id, e));
+                    result.forwardings_skipped += 1;
+                    continue;
+                }
+            };
+
+            let server_group_id = match Uuid::parse_str(&export_fwd.server_group_id) {
+                Ok(id) => id,
+                Err(e) => {
+                    result.errors.push(format!("Invalid server_group_id '{}': {}", export_fwd.server_group_id, e));
+                    result.forwardings_skipped += 1;
+                    continue;
+                }
+            };
+
+            // Verify server group exists
+            if !self.server_groups.contains_key(&server_group_id) {
+                result.errors.push(format!(
+                    "Server group '{}' not found for forwarding '{}'",
+                    export_fwd.server_group_id, export_fwd.name
+                ));
+                result.forwardings_skipped += 1;
+                continue;
+            }
+
+            let is_update = self.forwardings.contains_key(&id);
+            let (created_at, updated_at) = if is_update {
+                let existing = self.forwardings.get(&id).unwrap();
+                (existing.created_at, now)
+            } else {
+                (now, now)
+            };
+
+            let forwarding = Forwarding {
+                id,
+                server_group_id,
+                name: export_fwd.name,
+                source: export_fwd.source,
+                target: export_fwd.target,
+                created_at,
+                updated_at,
+            };
+
+            self.forwardings.insert(id, forwarding);
+            result.forwardings_imported += 1;
+        }
+
+        // Save the updated config store
+        if let Err(e) = self.save() {
+            result.success = false;
+            result.errors.push(format!("Failed to save config store: {}", e));
+        }
+
+        result
     }
 }
 

@@ -3,7 +3,7 @@
 mod config;
 mod process;
 
-use config::{AppSettings, ConfigStore, Forwarding, ServerGroup};
+use config::{AppSettings, ConfigStore, ExportData, Forwarding, ImportResult, SecretsStore, ServerGroup};
 use process::{ProcessManager, TunnelInstanceView};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -22,6 +22,7 @@ static SHUTDOWN_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 /// Application state shared across commands
 pub struct AppState {
     config_store: Mutex<ConfigStore>,
+    secrets_store: Mutex<SecretsStore>,
     app_settings: Mutex<AppSettings>,
     process_manager: Arc<ProcessManager>,
     config_load_error: Option<String>,
@@ -38,6 +39,14 @@ impl AppState {
             }
         };
 
+        let secrets_store = match SecretsStore::load() {
+            Ok(store) => store,
+            Err(e) => {
+                tracing::error!("Failed to load secrets store: {}. Using default.", e);
+                SecretsStore::default()
+            }
+        };
+
         let app_settings = match AppSettings::load() {
             Ok(settings) => settings,
             Err(e) => {
@@ -48,6 +57,7 @@ impl AppState {
 
         Self {
             config_store: Mutex::new(config_store),
+            secrets_store: Mutex::new(secrets_store),
             app_settings: Mutex::new(app_settings),
             process_manager: Arc::new(ProcessManager::new()),
             config_load_error,
@@ -91,12 +101,18 @@ async fn create_server_group(
     let group = ServerGroup {
         id: Uuid::new_v4(),
         name,
-        server_node_id,
-        auth_token,
+        server_node_id: server_node_id.clone(),
+        auth_token: auth_token.clone(),
         relay_urls: relay_urls.unwrap_or_default(),
         created_at: now,
         updated_at: now,
     };
+
+    // Save auth token to secrets store if present
+    if let Some(ref token) = auth_token {
+        let mut secrets = state.secrets_store.lock().await;
+        secrets.set_token(&server_node_id, token)?;
+    }
 
     let mut store = state.config_store.lock().await;
     store.upsert_server_group(group.clone())?;
@@ -114,11 +130,13 @@ async fn update_server_group(
 ) -> Result<ServerGroup, String> {
     let uuid = Uuid::parse_str(&id).map_err(|e| format!("Invalid UUID: {}", e))?;
 
-    let mut store = state.config_store.lock().await;
-    let existing = store
-        .get_server_group(uuid)
-        .ok_or_else(|| "Server group not found".to_string())?;
-    let created_at = existing.created_at;
+    let (created_at, relay_urls_final) = {
+        let store = state.config_store.lock().await;
+        let existing = store
+            .get_server_group(uuid)
+            .ok_or_else(|| "Server group not found".to_string())?;
+        (existing.created_at, relay_urls.unwrap_or_default())
+    };
 
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -128,13 +146,20 @@ async fn update_server_group(
     let group = ServerGroup {
         id: uuid,
         name,
-        server_node_id,
-        auth_token,
-        relay_urls: relay_urls.unwrap_or_default(),
+        server_node_id: server_node_id.clone(),
+        auth_token: auth_token.clone(),
+        relay_urls: relay_urls_final,
         created_at,
         updated_at: now,
     };
 
+    // Save auth token to secrets store if present
+    if let Some(ref token) = auth_token {
+        let mut secrets = state.secrets_store.lock().await;
+        secrets.set_token(&server_node_id, token)?;
+    }
+
+    let mut store = state.config_store.lock().await;
     store.upsert_server_group(group.clone())?;
     Ok(group)
 }
@@ -255,6 +280,34 @@ async fn delete_forwarding(state: State<'_, AppState>, id: String) -> Result<(),
 #[tauri::command]
 fn get_config_load_error(state: State<'_, AppState>) -> Option<String> {
     state.config_load_error.clone()
+}
+
+// ============================================================================
+// Export/Import Commands
+// ============================================================================
+
+#[tauri::command]
+async fn export_configs(state: State<'_, AppState>) -> Result<String, String> {
+    let store = state.config_store.lock().await;
+    let export_data = store.export();
+    serde_json::to_string_pretty(&export_data)
+        .map_err(|e| format!("Failed to serialize export data: {}", e))
+}
+
+#[tauri::command]
+async fn import_configs(state: State<'_, AppState>, json: String) -> Result<ImportResult, String> {
+    // Parse the import data
+    let export_data: ExportData = serde_json::from_str(&json)
+        .map_err(|e| format!("Invalid import data: {}", e))?;
+
+    // Load secrets store
+    let secrets = state.secrets_store.lock().await;
+
+    // Import configs
+    let mut store = state.config_store.lock().await;
+    let result = store.import(export_data, &secrets);
+
+    Ok(result)
 }
 
 // ============================================================================
@@ -420,6 +473,9 @@ pub fn run() {
             update_forwarding,
             delete_forwarding,
             get_config_load_error,
+            // Export/Import commands
+            export_configs,
+            import_configs,
             // Process commands
             list_instances,
             get_instance,

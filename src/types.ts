@@ -94,3 +94,42 @@ export interface TunnelInstance {
   status: TunnelStatus;
   logs: LogEntry[];
 }
+
+// ============================================================================
+// Export/Import Types
+// ============================================================================
+
+/** Server group for export (without auth_token) */
+export interface ExportServerGroup {
+  id: string;
+  name: string;
+  server_node_id: string;
+  relay_urls?: string[];
+}
+
+/** Forwarding for export */
+export interface ExportForwarding {
+  id: string;
+  server_group_id: string;
+  name: string;
+  source?: string;
+  target?: string;
+}
+
+/** Export data format (shareable, no secrets) */
+export interface ExportData {
+  version: number;
+  exported_at: number;
+  server_groups: ExportServerGroup[];
+  forwardings: ExportForwarding[];
+}
+
+/** Result of import operation */
+export interface ImportResult {
+  success: boolean;
+  groups_imported: number;
+  forwardings_imported: number;
+  groups_skipped: number;
+  forwardings_skipped: number;
+  errors: string[];
+}
