@@ -176,6 +176,7 @@ export function ConfigForm({ initial, onSubmit, onCancel, isEditing = false }: C
                             value={form.source}
                             onChange={handleChange('source')}
                             placeholder="tcp://127.0.0.1:22"
+                            autoCapitalize="off"
                         />
                         <span className="help-text">Remote service to tunnel</span>
                     </div>
@@ -188,6 +189,7 @@ export function ConfigForm({ initial, onSubmit, onCancel, isEditing = false }: C
                             value={form.target}
                             onChange={handleChange('target')}
                             placeholder="127.0.0.1:2222"
+                            autoCapitalize="off"
                         />
                         <span className="help-text">Local address to listen on</span>
                     </div>
@@ -218,6 +220,7 @@ export function ConfigForm({ initial, onSubmit, onCancel, isEditing = false }: C
                         onChange={handleChange('relay_urls')}
                         placeholder="https://relay1.example.com, https://relay2.example.com"
                         rows={2}
+                        autoCapitalize="off"
                     />
                     <span className="help-text">Comma-separated custom relay URLs</span>
                 </div>
