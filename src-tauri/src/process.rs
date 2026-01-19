@@ -255,7 +255,7 @@ impl ProcessManager {
     async fn cleanup_failed_instance(
         &self,
         instance: &Arc<Mutex<TunnelInstance>>,
-        id: Uuid,
+        forwarding_id: Uuid,
         error_msg: &str,
     ) {
         {
@@ -270,14 +270,14 @@ impl ProcessManager {
             guard.temp_config_path = None;
         }
         let mut instances = self.instances.write().await;
-        instances.remove(&id);
+        instances.remove(&forwarding_id);
     }
 
     /// Start tunnel using custom binary path
     async fn start_with_custom_binary(
         &self,
         instance: &Arc<Mutex<TunnelInstance>>,
-        id: Uuid,
+        forwarding_id: Uuid,
         binary_path: &str,
         config_path: &std::path::Path,
     ) -> Result<(), String> {
@@ -286,7 +286,7 @@ impl ProcessManager {
             Ok(true) => {} // Binary exists, continue
             Ok(false) => {
                 let error_msg = format!("Custom binary path '{}' does not exist", binary_path);
-                self.cleanup_failed_instance(instance, id, &error_msg).await;
+                self.cleanup_failed_instance(instance, forwarding_id, &error_msg).await;
                 return Err(error_msg);
             }
             Err(e) => {
@@ -294,7 +294,7 @@ impl ProcessManager {
                     "Failed to check if custom binary path '{}' exists: {}",
                     binary_path, e
                 );
-                self.cleanup_failed_instance(instance, id, &error_msg).await;
+                self.cleanup_failed_instance(instance, forwarding_id, &error_msg).await;
                 return Err(error_msg);
             }
         }
@@ -312,7 +312,7 @@ impl ProcessManager {
             Ok(c) => c,
             Err(e) => {
                 let error_msg = format!("Failed to spawn tunnel-rs: {}", e);
-                self.cleanup_failed_instance(instance, id, &error_msg).await;
+                self.cleanup_failed_instance(instance, forwarding_id, &error_msg).await;
                 return Err(error_msg);
             }
         };
@@ -409,14 +409,14 @@ impl ProcessManager {
     async fn start_with_sidecar(
         &self,
         instance: &Arc<Mutex<TunnelInstance>>,
-        id: Uuid,
+        forwarding_id: Uuid,
         config_path: &std::path::Path,
     ) -> Result<(), String> {
         let app_handle = match self.app_handle.read().await.clone() {
             Some(handle) => handle,
             None => {
                 let error_msg = "App handle not set";
-                self.cleanup_failed_instance(instance, id, error_msg).await;
+                self.cleanup_failed_instance(instance, forwarding_id, error_msg).await;
                 return Err(error_msg.to_string());
             }
         };
@@ -425,7 +425,7 @@ impl ProcessManager {
             Ok(cmd) => cmd.args(["client", "-c", &config_path.to_string_lossy()]),
             Err(e) => {
                 let error_msg = format!("Failed to create sidecar command: {}", e);
-                self.cleanup_failed_instance(instance, id, &error_msg).await;
+                self.cleanup_failed_instance(instance, forwarding_id, &error_msg).await;
                 return Err(error_msg);
             }
         };
@@ -434,7 +434,7 @@ impl ProcessManager {
             Ok(result) => result,
             Err(e) => {
                 let error_msg = format!("Failed to spawn sidecar: {}", e);
-                self.cleanup_failed_instance(instance, id, &error_msg).await;
+                self.cleanup_failed_instance(instance, forwarding_id, &error_msg).await;
                 return Err(error_msg);
             }
         };
