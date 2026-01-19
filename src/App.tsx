@@ -204,9 +204,8 @@ function App() {
       const json = await file.text();
       const result = await invoke<ImportResult>('import_configs', { json });
 
-      // Refresh data
-      await refreshGroups();
-      await refreshForwardings();
+      // Refresh data in parallel
+      await Promise.all([refreshGroups(), refreshForwardings()]);
 
       // Show result
       if (result.success) {
