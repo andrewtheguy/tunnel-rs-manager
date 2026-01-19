@@ -7,6 +7,14 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
+/// Get current Unix timestamp in seconds
+fn current_timestamp() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
 /// Iroh transport tuning configuration
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TransportConfig {
@@ -303,10 +311,7 @@ impl ConfigStore {
 
     /// Add or update a server group
     pub fn upsert_server_group(&mut self, mut group: ServerGroup) -> Result<Uuid, String> {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+        let now = current_timestamp();
 
         if let Some(existing) = self.server_groups.get(&group.id) {
             group.created_at = existing.created_at;
@@ -368,10 +373,7 @@ impl ConfigStore {
             return Err("Server group not found".to_string());
         }
 
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+        let now = current_timestamp();
 
         if let Some(existing) = self.forwardings.get(&forwarding.id) {
             forwarding.created_at = existing.created_at;
@@ -421,14 +423,9 @@ impl ConfigStore {
 
     /// Export all configs (without auth tokens, since auth_token has #[serde(skip)])
     pub fn export(&self) -> ExportData {
-        let exported_at = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-
         ExportData {
             version: 1,
-            exported_at,
+            exported_at: current_timestamp(),
             config: self.clone(),
         }
     }
@@ -452,10 +449,7 @@ impl ConfigStore {
             return result;
         }
 
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+        let now = current_timestamp();
 
         // Import server groups (auth_token will be None since it's not serialized)
         for (id, mut group) in data.config.server_groups {
