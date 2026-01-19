@@ -254,6 +254,13 @@ async fn create_forwarding(
     let group_uuid =
         Uuid::parse_str(&server_group_id).map_err(|e| format!("Invalid UUID: {}", e))?;
 
+    let mut store = state.config_store.lock().await;
+
+    // Verify server group exists before creating forwarding
+    if store.get_server_group(group_uuid).is_none() {
+        return Err(format!("Server group '{}' not found", server_group_id));
+    }
+
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| format!("System time error: {}", e))?
@@ -269,7 +276,6 @@ async fn create_forwarding(
         updated_at: now,
     };
 
-    let mut store = state.config_store.lock().await;
     store.upsert_forwarding(forwarding.clone())?;
     Ok(forwarding)
 }
@@ -288,6 +294,12 @@ async fn update_forwarding(
         Uuid::parse_str(&server_group_id).map_err(|e| format!("Invalid UUID: {}", e))?;
 
     let mut store = state.config_store.lock().await;
+
+    // Verify server group exists before updating forwarding
+    if store.get_server_group(group_uuid).is_none() {
+        return Err(format!("Server group '{}' not found", server_group_id));
+    }
+
     let existing = store
         .get_forwarding(uuid)
         .ok_or_else(|| "Forwarding not found".to_string())?;
