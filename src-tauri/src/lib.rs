@@ -361,6 +361,10 @@ async fn import_configs(state: State<'_, AppState>, json: String) -> Result<Impo
     let mut store = state.config_store.lock().await;
     let result = store.import(export_data);
 
+    // Rehydrate in-memory auth tokens from secrets store after import
+    let secrets_store = state.secrets_store.lock().await;
+    store.restore_auth_tokens(&secrets_store);
+
     Ok(result)
 }
 

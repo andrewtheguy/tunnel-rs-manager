@@ -86,10 +86,11 @@ export function ServerGroupForm({ initial, onSubmit, onCancel, isEditing = false
     const [submitting, setSubmitting] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const appliedInitialRef = useRef(false);
+    const normalizedAuthToken = form.auth_token.trim();
 
     const authTokenError = useMemo(
-        () => validateAuthToken(form.auth_token),
-        [form.auth_token]
+        () => validateAuthToken(normalizedAuthToken),
+        [normalizedAuthToken]
     );
 
     useEffect(() => {
@@ -188,13 +189,13 @@ export function ServerGroupForm({ initial, onSubmit, onCancel, isEditing = false
                         value={form.auth_token}
                         onChange={handleChange('auth_token')}
                         placeholder="iXXXXXXXXXXXXXXXXX"
-                        className={authTokenError && form.auth_token ? 'input-error' : ''}
+                        className={authTokenError && normalizedAuthToken ? 'input-error' : ''}
                         autoCapitalize="none"
                         autoComplete="off"
                         autoCorrect="off"
                         spellCheck={false}
                     />
-                    {authTokenError && form.auth_token ? (
+                    {authTokenError && normalizedAuthToken ? (
                         <span className="field-error">{authTokenError}</span>
                     ) : (
                         <span className="help-text">18-character token from server admin</span>

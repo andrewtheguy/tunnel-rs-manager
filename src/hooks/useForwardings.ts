@@ -29,35 +29,50 @@ export function useForwardings() {
     const [mutating, setMutating] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const mutationCountRef = useRef(0);
+    const mountedRef = useRef(true);
 
     const startMutation = useCallback(() => {
         mutationCountRef.current += 1;
-        setMutating(true);
+        if (mountedRef.current) {
+            setMutating(true);
+        }
     }, []);
 
     const endMutation = useCallback(() => {
         mutationCountRef.current -= 1;
         if (mutationCountRef.current <= 0) {
             mutationCountRef.current = 0;
-            setMutating(false);
+            if (mountedRef.current) {
+                setMutating(false);
+            }
         }
     }, []);
 
     const refresh = useCallback(async () => {
         try {
-            setLoading(true);
-            setError(null);
+            if (mountedRef.current) {
+                setLoading(true);
+                setError(null);
+            }
             const result = await invoke<Forwarding[]>('list_forwardings');
+            if (!mountedRef.current) return;
             setForwardings(result);
         } catch (e) {
+            if (!mountedRef.current) return;
             setError(e instanceof Error ? e.message : String(e));
         } finally {
-            setLoading(false);
+            if (mountedRef.current) {
+                setLoading(false);
+            }
         }
     }, []);
 
     useEffect(() => {
+        mountedRef.current = true;
         refresh();
+        return () => {
+            mountedRef.current = false;
+        };
     }, [refresh]);
 
     const createForwarding = useCallback(async (serverGroupId: string, form: ForwardingFormData): Promise<Forwarding> => {
@@ -69,12 +84,16 @@ export function useForwardings() {
                 ...payload,
             });
 
-            setError(null);
-            await refresh();
+            if (mountedRef.current) {
+                setError(null);
+                await refresh();
+            }
             return forwarding;
         } catch (e) {
             const message = e instanceof Error ? e.message : String(e);
-            setError(`Failed to create forwarding: ${message}`);
+            if (mountedRef.current) {
+                setError(`Failed to create forwarding: ${message}`);
+            }
             throw e;
         } finally {
             endMutation();
@@ -91,12 +110,16 @@ export function useForwardings() {
                 ...payload,
             });
 
-            setError(null);
-            await refresh();
+            if (mountedRef.current) {
+                setError(null);
+                await refresh();
+            }
             return forwarding;
         } catch (e) {
             const message = e instanceof Error ? e.message : String(e);
-            setError(`Failed to update forwarding: ${message}`);
+            if (mountedRef.current) {
+                setError(`Failed to update forwarding: ${message}`);
+            }
             throw e;
         } finally {
             endMutation();
@@ -107,11 +130,15 @@ export function useForwardings() {
         startMutation();
         try {
             await invoke('delete_forwarding', { id });
-            setError(null);
-            await refresh();
+            if (mountedRef.current) {
+                setError(null);
+                await refresh();
+            }
         } catch (e) {
             const message = e instanceof Error ? e.message : String(e);
-            setError(`Failed to delete forwarding: ${message}`);
+            if (mountedRef.current) {
+                setError(`Failed to delete forwarding: ${message}`);
+            }
             throw e;
         } finally {
             endMutation();
