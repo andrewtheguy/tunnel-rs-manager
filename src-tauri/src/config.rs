@@ -81,7 +81,7 @@ pub struct ServerGroup {
     pub server_node_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auth_token: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub relay_urls: Vec<String>,
     #[serde(default)]
     pub created_at: u64,

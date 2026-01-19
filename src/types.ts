@@ -35,7 +35,7 @@ export function serverGroupToForm(group: ServerGroup): ServerGroupFormData {
     name: group.name,
     server_node_id: group.server_node_id,
     auth_token: group.auth_token ?? '',
-    relay_urls: group.relay_urls.join(', '),
+    relay_urls: (group.relay_urls ?? []).join(', '),
   };
 }
 

@@ -59,7 +59,7 @@ export function ServerGroupCard({
                                 {runningCount} running
                             </span>
                         )}
-                        {group.relay_urls.length > 0 && (
+                        {(group.relay_urls?.length ?? 0) > 0 && (
                             <span className="meta-item">
                                 {group.relay_urls.length} relay{group.relay_urls.length !== 1 ? 's' : ''}
                             </span>
