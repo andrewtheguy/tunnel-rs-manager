@@ -42,6 +42,14 @@ export function ForwardingForm({ initial, serverGroupName, onSubmit, onCancel, i
             setError('Name is required');
             return;
         }
+        if (!form.source.trim()) {
+            setError('Source address is required');
+            return;
+        }
+        if (!form.target.trim()) {
+            setError('Local target is required');
+            return;
+        }
 
         setSubmitting(true);
         setError(null);
@@ -79,7 +87,7 @@ export function ForwardingForm({ initial, serverGroupName, onSubmit, onCancel, i
 
                 <div className="form-row">
                     <div className="form-group">
-                        <label htmlFor="source">Source Address</label>
+                        <label htmlFor="source">Source Address *</label>
                         <input
                             id="source"
                             type="text"
@@ -94,7 +102,7 @@ export function ForwardingForm({ initial, serverGroupName, onSubmit, onCancel, i
                     </div>
 
                     <div className="form-group">
-                        <label htmlFor="target">Local Target</label>
+                        <label htmlFor="target">Local Target *</label>
                         <input
                             id="target"
                             type="text"

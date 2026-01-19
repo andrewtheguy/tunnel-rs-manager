@@ -4,6 +4,9 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import type { TunnelInstance } from '../types';
 
+/** Minimal forwarding reference for group membership checks */
+type ForwardingRef = { id: string; server_group_id: string };
+
 export function useTunnelInstances() {
     const [instances, setInstances] = useState<TunnelInstance[]>([]);
     const [loading, setLoading] = useState(false);
@@ -67,7 +70,7 @@ export function useTunnelInstances() {
     }, [instances]);
 
     /** Check if any forwarding in a group is running */
-    const isGroupRunning = useCallback((serverGroupId: string, forwardings: { id: string; server_group_id: string }[]): boolean => {
+    const isGroupRunning = useCallback((serverGroupId: string, forwardings: ForwardingRef[]): boolean => {
         const groupForwardingIds = forwardings
             .filter(f => f.server_group_id === serverGroupId)
             .map(f => f.id);

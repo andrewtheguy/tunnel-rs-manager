@@ -1,6 +1,6 @@
 // Server Group edit/create form component
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import type { ServerGroupFormData } from '../types';
 import './ServerGroupForm.css';
 
@@ -85,6 +85,7 @@ export function ServerGroupForm({ initial, onSubmit, onCancel, isEditing = false
     });
     const [submitting, setSubmitting] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const appliedInitialRef = useRef(false);
 
     const authTokenError = useMemo(
         () => validateAuthToken(form.auth_token),
@@ -92,8 +93,9 @@ export function ServerGroupForm({ initial, onSubmit, onCancel, isEditing = false
     );
 
     useEffect(() => {
-        if (initial) {
+        if (initial && !appliedInitialRef.current) {
             setForm(initial);
+            appliedInitialRef.current = true;
         }
     }, [initial]);
 

@@ -97,9 +97,9 @@ export function ForwardingItem({
                 </div>
             </div>
 
-            {showLogs && hasLogs && (
+            {showLogs && instance && instance.logs.length > 0 && (
                 <div className="forwarding-logs">
-                    <LogViewer logs={instance!.logs.slice(-20)} maxHeight="150px" />
+                    <LogViewer logs={instance.logs.slice(-20)} maxHeight="150px" />
                 </div>
             )}
         </div>
