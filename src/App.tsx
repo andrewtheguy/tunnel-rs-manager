@@ -47,10 +47,10 @@ function App() {
   }, [createServerGroup]);
 
   const handleEditGroupSubmit = useCallback(async (form: ServerGroupFormData) => {
-    if (!editingGroup) {
-      throw new Error('No editing group selected');
-    }
     try {
+      if (!editingGroup) {
+        throw new Error('No editing group selected');
+      }
       await updateServerGroup(editingGroup.id, form);
       setView('list');
       setEditingGroup(null);
@@ -87,10 +87,10 @@ function App() {
   }, []);
 
   const handleCreateForwardingSubmit = useCallback(async (form: ForwardingFormData) => {
-    if (!addForwardingToGroupId) {
-      throw new Error('No server group selected');
-    }
     try {
+      if (!addForwardingToGroupId) {
+        throw new Error('No server group selected');
+      }
       await createForwarding(addForwardingToGroupId, form);
       setView('list');
       setAddForwardingToGroupId(null);
@@ -100,10 +100,10 @@ function App() {
   }, [addForwardingToGroupId, createForwarding]);
 
   const handleEditForwardingSubmit = useCallback(async (form: ForwardingFormData) => {
-    if (!editingForwarding) {
-      throw new Error('No editing forwarding selected');
-    }
     try {
+      if (!editingForwarding) {
+        throw new Error('No editing forwarding selected');
+      }
       await updateForwarding(editingForwarding.id, editingForwarding.server_group_id, form);
       setView('list');
       setEditingForwarding(null);
