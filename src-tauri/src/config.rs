@@ -205,7 +205,6 @@ impl SecretsStore {
     }
 
     /// Remove auth token for a server_node_id
-    #[allow(dead_code)]
     pub fn remove_token(&mut self, server_node_id: &str) -> Result<(), String> {
         self.auth_tokens.remove(server_node_id);
         self.save()

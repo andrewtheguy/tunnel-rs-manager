@@ -167,8 +167,28 @@ async fn update_server_group(
 #[tauri::command]
 async fn delete_server_group(state: State<'_, AppState>, id: String) -> Result<(), String> {
     let uuid = Uuid::parse_str(&id).map_err(|e| format!("Invalid UUID: {}", e))?;
-    let mut store = state.config_store.lock().await;
-    store.delete_server_group(uuid)
+
+    // Get the server_node_id before deleting so we can clean up secrets
+    let server_node_id = {
+        let store = state.config_store.lock().await;
+        store
+            .get_server_group(uuid)
+            .map(|g| g.server_node_id.clone())
+    };
+
+    // Delete the server group
+    {
+        let mut store = state.config_store.lock().await;
+        store.delete_server_group(uuid)?;
+    }
+
+    // Clean up auth token from secrets store
+    if let Some(node_id) = server_node_id {
+        let mut secrets = state.secrets_store.lock().await;
+        let _ = secrets.remove_token(&node_id);
+    }
+
+    Ok(())
 }
 
 // ============================================================================
