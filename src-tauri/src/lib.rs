@@ -30,7 +30,7 @@ pub struct AppState {
 
 impl AppState {
     fn new() -> Self {
-        let (config_store, config_load_error) = match ConfigStore::load() {
+        let (mut config_store, config_load_error) = match ConfigStore::load() {
             Ok(store) => (store, None),
             Err(e) => {
                 let error_msg = format!("Failed to load config store: {}. Using default.", e);
@@ -46,6 +46,9 @@ impl AppState {
                 SecretsStore::default()
             }
         };
+
+        // Restore auth tokens from secrets store
+        config_store.restore_auth_tokens(&secrets_store);
 
         let app_settings = match AppSettings::load() {
             Ok(settings) => settings,

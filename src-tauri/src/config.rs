@@ -80,7 +80,8 @@ pub struct ServerGroup {
     pub id: Uuid,
     pub name: String,
     pub server_node_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Auth token is stored separately in secrets.json, not in configs.json
+    #[serde(skip)]
     pub auth_token: Option<String>,
     #[serde(default)]
     pub relay_urls: Vec<String>,
@@ -296,6 +297,14 @@ impl ConfigStore {
             .map_err(|e| format!("Failed to serialize config store: {}", e))?;
         fs::write(&path, content)
             .map_err(|e| format!("Failed to write config store: {}", e))
+    }
+
+    /// Restore auth tokens from SecretsStore after loading
+    /// This populates the auth_token field for each server group from secrets.json
+    pub fn restore_auth_tokens(&mut self, secrets: &SecretsStore) {
+        for group in self.server_groups.values_mut() {
+            group.auth_token = secrets.get_token(&group.server_node_id).cloned();
+        }
     }
 
     // ============================================================================
