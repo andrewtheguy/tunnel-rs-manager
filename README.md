@@ -11,8 +11,7 @@ A cross-platform desktop application to manage [tunnel-rs](https://github.com/an
 - Import/Export configurations
 
 ## Screenshot
-<img width="1212" height="914" alt="Screenshot 2026-01-19 at 4 33 34 PM" src="https://github.com/user-attachments/assets/e5ab71df-a8d2-42f3-af38-95f500a8a84b" />
-
+<img width="1100" height="802" alt="Screenshot 2026-01-19 at 4 38 04 PM" src="https://github.com/user-attachments/assets/4e91fc06-f5b5-4533-b89a-8f30606a0c22" />
 
 ## Bundled Binary
 
