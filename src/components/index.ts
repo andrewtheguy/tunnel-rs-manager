@@ -7,3 +7,4 @@ export { ServerGroupForm } from './ServerGroupForm';
 export { ForwardingForm } from './ForwardingForm';
 export { ServerGroupCard } from './ServerGroupCard';
 export { ForwardingItem } from './ForwardingItem';
+export { ConfirmDialog } from './ConfirmDialog';

@@ -2,7 +2,7 @@ import { useState, useCallback, useMemo, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { save } from '@tauri-apps/plugin-dialog';
 import { writeTextFile } from '@tauri-apps/plugin-fs';
-import { Sidebar, ServerGroupCard, ServerGroupForm, ForwardingForm } from './components';
+import { Sidebar, ServerGroupCard, ServerGroupForm, ForwardingForm, ConfirmDialog } from './components';
 import { useServerGroups, useForwardings, useTunnelInstances, useBinaryPath } from './hooks';
 import type { ServerGroup, Forwarding, ServerGroupFormData, ForwardingFormData, ImportResult } from './types';
 import { serverGroupToForm, forwardingToForm } from './types';
@@ -25,6 +25,7 @@ function App() {
   const [editingGroup, setEditingGroup] = useState<ServerGroup | null>(null);
   const [editingForwarding, setEditingForwarding] = useState<Forwarding | null>(null);
   const [addForwardingToGroupId, setAddForwardingToGroupId] = useState<string | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<{ type: 'group' | 'forwarding'; id: string; name: string } | null>(null);
 
   // Handlers for Server Groups
   const handleAddGroup = useCallback(() => {
@@ -59,17 +60,20 @@ function App() {
     }
   }, [editingGroup, updateServerGroup]);
 
-  const handleDeleteGroup = useCallback(async (id: string) => {
-    if (window.confirm('Are you sure you want to delete this server group?')) {
-      try {
-        await deleteServerGroup(id);
-        if (selectedGroupId === id) {
-          setSelectedGroupId(null);
-          setSelectedForwardingId(null);
-        }
-      } catch (e) {
-        alert(`Failed to delete server group: ${e instanceof Error ? e.message : e}`);
+  const handleDeleteGroup = useCallback((id: string) => {
+    const group = getServerGroup(id);
+    setPendingDelete({ type: 'group', id, name: group?.name || 'Server Group' });
+  }, [getServerGroup]);
+
+  const confirmDeleteGroup = useCallback(async (id: string) => {
+    try {
+      await deleteServerGroup(id);
+      if (selectedGroupId === id) {
+        setSelectedGroupId(null);
+        setSelectedForwardingId(null);
       }
+    } catch (e) {
+      alert(`Failed to delete server group: ${e instanceof Error ? e.message : e}`);
     }
   }, [deleteServerGroup, selectedGroupId]);
 
@@ -113,24 +117,41 @@ function App() {
     }
   }, [editingForwarding, updateForwarding]);
 
-  const handleDeleteForwarding = useCallback(async (id: string) => {
+  const handleDeleteForwarding = useCallback((id: string) => {
     // Check if running
     const instance = instances.find(i => i.forwarding_id === id);
     if (instance && (instance.status === 'running' || instance.status === 'starting')) {
       alert('Cannot delete a running forwarding. Stop it first.');
       return;
     }
-    if (window.confirm('Are you sure you want to delete this forwarding?')) {
-      try {
-        await deleteForwarding(id);
-        if (selectedForwardingId === id) {
-          setSelectedForwardingId(null);
-        }
-      } catch (e) {
-        alert(`Failed to delete forwarding: ${e instanceof Error ? e.message : e}`);
+    const forwarding = getForwarding(id);
+    setPendingDelete({ type: 'forwarding', id, name: forwarding?.name || 'Forwarding' });
+  }, [instances, getForwarding]);
+
+  const confirmDeleteForwarding = useCallback(async (id: string) => {
+    try {
+      await deleteForwarding(id);
+      if (selectedForwardingId === id) {
+        setSelectedForwardingId(null);
       }
+    } catch (e) {
+      alert(`Failed to delete forwarding: ${e instanceof Error ? e.message : e}`);
     }
-  }, [deleteForwarding, selectedForwardingId, instances]);
+  }, [deleteForwarding, selectedForwardingId]);
+
+  const handleConfirmDelete = useCallback(async () => {
+    if (!pendingDelete) return;
+    if (pendingDelete.type === 'group') {
+      await confirmDeleteGroup(pendingDelete.id);
+    } else {
+      await confirmDeleteForwarding(pendingDelete.id);
+    }
+    setPendingDelete(null);
+  }, [pendingDelete, confirmDeleteGroup, confirmDeleteForwarding]);
+
+  const handleCancelDelete = useCallback(() => {
+    setPendingDelete(null);
+  }, []);
 
   // Handlers for Tunnels
   const handleStartForwarding = useCallback(async (id: string) => {
@@ -421,6 +442,14 @@ function App() {
           </>
         )}
       </main>
+
+      {pendingDelete && (
+        <ConfirmDialog
+          message={`Are you sure you want to delete "${pendingDelete.name}"?`}
+          onConfirm={handleConfirmDelete}
+          onCancel={handleCancelDelete}
+        />
+      )}
     </div>
   );
 }
