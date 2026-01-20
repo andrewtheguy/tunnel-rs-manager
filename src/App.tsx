@@ -363,29 +363,6 @@ function App() {
                 {' '}{forwardings.length} forwarding{forwardings.length !== 1 ? 's' : ''} •
                 {' '}{runningCount} running
               </p>
-              <div className="binary-path-row">
-                <span className="binary-path-info" title={isUsingBundled ? 'Bundled' : (customBinaryPath ?? 'Not set')}>
-                  Binary: {isUsingBundled ? 'Bundled' : (customBinaryPath ?? 'Not set')}
-                </span>
-                <div className="binary-path-actions">
-                  <button
-                    className="btn-small"
-                    onClick={handleSelectCustomBinaryPath}
-                    title="Select custom binary path"
-                  >
-                    Use Custom
-                  </button>
-                  {!isUsingBundled && (
-                    <button
-                      className="btn-small btn-secondary"
-                      onClick={handleUseBundledBinary}
-                      title="Switch to bundled binary"
-                    >
-                      Use Bundled
-                    </button>
-                  )}
-                </div>
-              </div>
               <div className="export-import-row">
                 <button
                   className="btn-small"
@@ -445,6 +422,30 @@ function App() {
                 ))}
               </div>
             )}
+
+            <div className="binary-path-row">
+              <span className="binary-path-info" title={isUsingBundled ? 'Bundled' : (customBinaryPath ?? 'Not set')}>
+                tunnel-rs binary: {isUsingBundled ? 'Bundled' : (customBinaryPath ?? 'Not set')}
+              </span>
+              <div className="binary-path-actions">
+                <button
+                  className="btn-small"
+                  onClick={handleSelectCustomBinaryPath}
+                  title="Select custom binary path"
+                >
+                  Use Custom
+                </button>
+                {!isUsingBundled && (
+                  <button
+                    className="btn-small btn-secondary"
+                    onClick={handleUseBundledBinary}
+                    title="Switch to bundled binary"
+                  >
+                    Use Bundled
+                  </button>
+                )}
+              </div>
+            </div>
           </>
         )}
       </main>
