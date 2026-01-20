@@ -26,6 +26,7 @@ function App() {
   const [editingForwarding, setEditingForwarding] = useState<Forwarding | null>(null);
   const [addForwardingToGroupId, setAddForwardingToGroupId] = useState<string | null>(null);
   const [pendingDelete, setPendingDelete] = useState<{ type: 'group' | 'forwarding'; id: string; name: string } | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   // Handlers for Server Groups
   const handleAddGroup = useCallback(() => {
@@ -140,14 +141,19 @@ function App() {
   }, [deleteForwarding, selectedForwardingId]);
 
   const handleConfirmDelete = useCallback(async () => {
-    if (!pendingDelete) return;
-    if (pendingDelete.type === 'group') {
-      await confirmDeleteGroup(pendingDelete.id);
-    } else {
-      await confirmDeleteForwarding(pendingDelete.id);
+    if (!pendingDelete || deleting) return;
+    setDeleting(true);
+    try {
+      if (pendingDelete.type === 'group') {
+        await confirmDeleteGroup(pendingDelete.id);
+      } else {
+        await confirmDeleteForwarding(pendingDelete.id);
+      }
+    } finally {
+      setDeleting(false);
+      setPendingDelete(null);
     }
-    setPendingDelete(null);
-  }, [pendingDelete, confirmDeleteGroup, confirmDeleteForwarding]);
+  }, [pendingDelete, deleting, confirmDeleteGroup, confirmDeleteForwarding]);
 
   const handleCancelDelete = useCallback(() => {
     setPendingDelete(null);
@@ -448,6 +454,7 @@ function App() {
           message={`Are you sure you want to delete "${pendingDelete.name}"?`}
           onConfirm={handleConfirmDelete}
           onCancel={handleCancelDelete}
+          loading={deleting}
         />
       )}
     </div>
