@@ -4,13 +4,11 @@ A cross-platform desktop application to manage [tunnel-rs](https://github.com/an
 
 ## Features
 
-- Create, edit, and delete tunnel configurations
-- Start and stop tunnel instances with one click
-- View real-time tunnel status and logs
-- System tray integration (minimize to tray)
 - Persistent configuration storage
 - Custom binary path support
 - Cross-platform: macOS, Windows
+- Server group
+- Import/Export configurations
 
 ## Bundled Binary
 
@@ -18,7 +16,7 @@ This application includes a bundled `tunnel-rs` binary, so no separate installat
 
 | Component | Version | Source |
 |-----------|---------|--------|
-| tunnel-rs | **0.1.63** | [GitHub Release](https://github.com/andrewtheguy/tunnel-rs/releases/tag/0.1.63) |
+| tunnel-rs | **0.1.74** | [GitHub Release](https://github.com/andrewtheguy/tunnel-rs/releases/tag/0.1.74) |
 
 ### Supported Platforms
 
@@ -26,9 +24,8 @@ This application includes a bundled `tunnel-rs` binary, so no separate installat
 |----------|--------------|--------|
 | macOS | ARM64 (Apple Silicon) | Bundled |
 | Windows | AMD64 (x86_64) | Bundled |
-| macOS | Intel (x86_64) | Not bundled (use custom binary) |
 
-If you need to use a different version or an unsupported platform, you can specify a custom binary path (see [Custom Binary Path](#custom-binary-path) below).
+If you need to use a different version, you can specify a custom binary path (see [Custom Binary Path](#custom-binary-path) below). For unsupported platforms, you need to compile both `tunnel-rs` and this GUI yourself.
 
 ## Installation
 
