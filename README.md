@@ -10,6 +10,10 @@ A cross-platform desktop application to manage [tunnel-rs](https://github.com/an
 - Server group
 - Import/Export configurations
 
+## Screenshot
+<img width="1212" height="914" alt="Screenshot 2026-01-19 at 4 33 34 PM" src="https://github.com/user-attachments/assets/e5ab71df-a8d2-42f3-af38-95f500a8a84b" />
+
+
 ## Bundled Binary
 
 This application includes a bundled `tunnel-rs` binary, so no separate installation is required. The bundled version is:
