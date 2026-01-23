@@ -69,6 +69,10 @@
 
 .forwarding-actions {
     display: flex;
+    margin-left: auto;
+    justify-content: flex-end;
+    align-items: center;
+    flex-shrink: 0;
     gap: 4px;
 }
 

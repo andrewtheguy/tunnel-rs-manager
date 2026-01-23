@@ -108,7 +108,7 @@ export function ForwardingForm({ initial, serverGroupName, onSubmit, onCancel, i
                             type="text"
                             value={form.target}
                             onChange={handleChange('target')}
-                            placeholder="127.0.0.1:2222"
+                            placeholder="localhost:2222"
                             autoCapitalize="none"
                             autoCorrect="off"
                             spellCheck="false"
