@@ -196,7 +196,7 @@
 }
 
 /* Forwarding list (nested under groups) */
-.forwarding-list {
+.sidebar .forwarding-list {
     list-style: none;
     margin: 0;
     padding: 4px 0 4px 28px;
@@ -205,7 +205,7 @@
     gap: 2px;
 }
 
-.forwarding-item {
+.sidebar .forwarding-item {
     display: flex;
     justify-content: space-between;
     align-items: center;
@@ -216,20 +216,20 @@
     border: 1px solid transparent;
 }
 
-.forwarding-item:hover {
+.sidebar .forwarding-item:hover {
     background: rgba(255, 255, 255, 0.04);
 }
 
-.forwarding-item.selected {
+.sidebar .forwarding-item.selected {
     background: rgba(99, 102, 241, 0.12);
     border-color: rgba(99, 102, 241, 0.25);
 }
 
-.forwarding-item.active {
+.sidebar .forwarding-item.active {
     border-left: 2px solid #10b981;
 }
 
-.forwarding-content {
+.sidebar .forwarding-content {
     display: flex;
     flex-direction: column;
     gap: 1px;
@@ -237,7 +237,7 @@
     flex: 1;
 }
 
-.forwarding-name {
+.sidebar .forwarding-name {
     font-size: 13px;
     font-weight: 500;
     color: #e5e7eb;
@@ -246,7 +246,7 @@
     text-overflow: ellipsis;
 }
 
-.forwarding-target {
+.sidebar .forwarding-target {
     font-size: 10px;
     color: #6b7280;
     font-family: 'SF Mono', monospace;
