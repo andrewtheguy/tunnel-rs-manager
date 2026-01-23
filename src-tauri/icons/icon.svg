@@ -10,15 +10,11 @@
   <rect x="32" y="32" width="448" height="448" rx="80" ry="80" fill="url(#bg)"/>
 
   <!-- Port outline -->
-  <rect x="156" y="176" width="200" height="160" rx="32" ry="32" fill="none" stroke="#FFFFFF" stroke-width="18"/>
+  <rect x="116" y="136" width="280" height="240" rx="40" ry="40" fill="none" stroke="#FFFFFF" stroke-width="22"/>
 
   <!-- Port pins -->
-  <circle cx="216" cy="256" r="12" fill="#FFFFFF"/>
-  <circle cx="296" cy="256" r="12" fill="#FFFFFF"/>
+  <circle cx="216" cy="256" r="20" fill="#FFFFFF"/>
+  <circle cx="296" cy="256" r="20" fill="#FFFFFF"/>
 
-  <!-- Left arrow (incoming) -->
-  <polygon points="70,256 140,206 140,236 190,236 190,276 140,276 140,306" fill="#FFFFFF"/>
-
-  <!-- Right arrow (outgoing) -->
-  <polygon points="442,256 372,206 372,236 322,236 322,276 372,276 372,306" fill="#FFFFFF"/>
+  <!-- No arrows -->
 </svg>
