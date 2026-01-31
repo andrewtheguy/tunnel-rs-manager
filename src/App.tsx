@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo, useRef } from 'react';
+import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { save } from '@tauri-apps/plugin-dialog';
 import { writeTextFile } from '@tauri-apps/plugin-fs';
@@ -18,6 +18,10 @@ function App() {
 
   // Hidden file input for import
   const importInputRef = useRef<HTMLInputElement>(null);
+  // Ref to main content for scroll restoration
+  const mainContentRef = useRef<HTMLElement>(null);
+  // Saved scroll position when leaving list view
+  const savedScrollPos = useRef(0);
 
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
   const [selectedForwardingId, setSelectedForwardingId] = useState<string | null>(null);
@@ -28,16 +32,32 @@ function App() {
   const [pendingDelete, setPendingDelete] = useState<{ type: 'group' | 'forwarding'; id: string; name: string } | null>(null);
   const [deleting, setDeleting] = useState(false);
 
-  // Handlers for Server Groups
-  const handleAddGroup = useCallback(() => {
-    setView('create-group');
-    setEditingGroup(null);
+  // Restore scroll position when returning to list view
+  useEffect(() => {
+    if (view === 'list' && mainContentRef.current && savedScrollPos.current > 0) {
+      mainContentRef.current.scrollTop = savedScrollPos.current;
+    }
+  }, [view]);
+
+  // Save scroll position before leaving list view
+  const saveScrollPosition = useCallback(() => {
+    if (mainContentRef.current) {
+      savedScrollPos.current = mainContentRef.current.scrollTop;
+    }
   }, []);
 
+  // Handlers for Server Groups
+  const handleAddGroup = useCallback(() => {
+    saveScrollPosition();
+    setView('create-group');
+    setEditingGroup(null);
+  }, [saveScrollPosition]);
+
   const handleEditGroup = useCallback((group: ServerGroup) => {
+    saveScrollPosition();
     setEditingGroup(group);
     setView('edit-group');
-  }, []);
+  }, [saveScrollPosition]);
 
   const handleCreateGroupSubmit = useCallback(async (form: ServerGroupFormData) => {
     try {
@@ -80,16 +100,18 @@ function App() {
 
   // Handlers for Forwardings
   const handleAddForwarding = useCallback((groupId: string) => {
+    saveScrollPosition();
     setAddForwardingToGroupId(groupId);
     setEditingForwarding(null);
     setView('create-forwarding');
-  }, []);
+  }, [saveScrollPosition]);
 
   const handleEditForwarding = useCallback((forwarding: Forwarding) => {
+    saveScrollPosition();
     setEditingForwarding(forwarding);
     setAddForwardingToGroupId(forwarding.server_group_id);
     setView('edit-forwarding');
-  }, []);
+  }, [saveScrollPosition]);
 
   const handleCreateForwardingSubmit = useCallback(async (form: ForwardingFormData) => {
     try {
@@ -311,7 +333,7 @@ function App() {
         onAddGroup={handleAddGroup}
       />
 
-      <main className="main-content">
+      <main className="main-content" ref={mainContentRef}>
         {view === 'create-group' && (
           <div className="form-container">
             <ServerGroupForm
