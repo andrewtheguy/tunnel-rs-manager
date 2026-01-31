@@ -88,8 +88,9 @@ pub struct ServerGroup {
     pub id: Uuid,
     pub name: String,
     pub server_node_id: String,
-    /// Auth token is stored separately in secrets.json, not in configs.json
-    #[serde(skip)]
+    /// Auth token is stored separately in secrets.json, not in configs.json.
+    /// Populated from secrets at runtime via restore_auth_tokens().
+    #[serde(default)]
     pub auth_token: Option<String>,
     #[serde(default)]
     pub relay_urls: Vec<String>,
@@ -272,14 +273,19 @@ impl ConfigStore {
             .map_err(|e| format!("Failed to parse config store: {}", e))
     }
 
-    /// Save config store to disk
+    /// Save config store to disk (auth_tokens are stripped to keep them in secrets.json only)
     pub fn save(&self) -> Result<(), String> {
         let path = Self::store_path()?;
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
                 .map_err(|e| format!("Failed to create config directory: {}", e))?;
         }
-        let content = serde_json::to_string_pretty(self)
+        // Create a copy with auth_tokens cleared (they're stored in secrets.json)
+        let mut store_to_save = self.clone();
+        for group in store_to_save.server_groups.values_mut() {
+            group.auth_token = None;
+        }
+        let content = serde_json::to_string_pretty(&store_to_save)
             .map_err(|e| format!("Failed to serialize config store: {}", e))?;
         fs::write(&path, content)
             .map_err(|e| format!("Failed to write config store: {}", e))
