@@ -542,16 +542,85 @@ impl ProcessManager {
                     } else {
                         guard.add_log("Tunnel stopped by user".to_string(), false);
                     }
-                    // Wait a bit and verify the process is gone
-                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+                    // Wait for process to terminate with timeout loop
+                    const MAX_WAIT_MS: u64 = 2000;
+                    const POLL_INTERVAL_MS: u64 = 100;
+                    let mut waited_ms: u64 = 0;
+
                     #[cfg(unix)]
                     {
-                        // Check if process is still alive and force kill if needed
-                        unsafe {
-                            if libc::kill(pid as i32, 0) == 0 {
-                                // Process still alive, send SIGKILL
-                                libc::kill(pid as i32, libc::SIGKILL);
+                        while waited_ms < MAX_WAIT_MS {
+                            tokio::time::sleep(tokio::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
+                            waited_ms += POLL_INTERVAL_MS;
+
+                            // Check if process is still alive (kill with signal 0)
+                            let alive = unsafe { libc::kill(pid as i32, 0) == 0 };
+                            if !alive {
+                                break;
                             }
+                        }
+
+                        // If still alive after timeout, force kill with SIGKILL
+                        let still_alive = unsafe { libc::kill(pid as i32, 0) == 0 };
+                        if still_alive {
+                            let result = unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+                            if result != 0 {
+                                let err = std::io::Error::last_os_error();
+                                guard.add_log(
+                                    format!("Failed to SIGKILL process {}: {}", pid, err),
+                                    true,
+                                );
+                            } else {
+                                guard.add_log(
+                                    format!("Force killed process {} with SIGKILL", pid),
+                                    true,
+                                );
+                            }
+                        }
+                    }
+
+                    #[cfg(windows)]
+                    {
+                        use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+                        use windows_sys::Win32::System::Threading::{
+                            OpenProcess, TerminateProcess, PROCESS_QUERY_INFORMATION, PROCESS_TERMINATE,
+                        };
+
+                        while waited_ms < MAX_WAIT_MS {
+                            tokio::time::sleep(tokio::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
+                            waited_ms += POLL_INTERVAL_MS;
+
+                            // Check if process is still alive
+                            let handle: HANDLE = unsafe {
+                                OpenProcess(PROCESS_QUERY_INFORMATION, 0, pid)
+                            };
+                            if handle == 0 {
+                                // Process no longer exists
+                                break;
+                            }
+                            unsafe { CloseHandle(handle) };
+                        }
+
+                        // If still alive after timeout, force terminate
+                        let handle: HANDLE = unsafe {
+                            OpenProcess(PROCESS_TERMINATE | PROCESS_QUERY_INFORMATION, 0, pid)
+                        };
+                        if handle != 0 {
+                            let result = unsafe { TerminateProcess(handle, 1) };
+                            if result == 0 {
+                                let err = std::io::Error::last_os_error();
+                                guard.add_log(
+                                    format!("Failed to TerminateProcess {}: {}", pid, err),
+                                    true,
+                                );
+                            } else {
+                                guard.add_log(
+                                    format!("Force terminated process {} with TerminateProcess", pid),
+                                    true,
+                                );
+                            }
+                            unsafe { CloseHandle(handle) };
                         }
                     }
                 }

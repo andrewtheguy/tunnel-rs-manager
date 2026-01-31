@@ -630,15 +630,13 @@ pub fn run() {
                         }
                         Err(_) => {
                             tracing::error!(
-                                "Shutdown timeout after {} seconds, force killing all processes",
+                                "Shutdown timeout after {} seconds, force killing remaining processes",
                                 SHUTDOWN_TIMEOUT.as_secs()
                             );
-                            // Force kill any remaining processes
-                            state.process_manager.force_kill_all().await;
                         }
                     }
 
-                    // Final safety: force kill all before exit to ensure no orphans
+                    // Force kill any remaining processes to ensure no orphans
                     state.process_manager.force_kill_all().await;
                 }
                 // Force exit without re-triggering ExitRequested
