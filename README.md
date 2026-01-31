@@ -19,7 +19,7 @@ This application includes a bundled `tunnel-rs` binary, so no separate installat
 
 | Component | Version | Source |
 |-----------|---------|--------|
-| tunnel-rs | **0.1.74** | [GitHub Release](https://github.com/andrewtheguy/tunnel-rs/releases/tag/0.1.74) |
+| tunnel-rs | **0.1.78** | [GitHub Release](https://github.com/andrewtheguy/tunnel-rs/releases/tag/0.1.78) |
 
 ### Supported Platforms
 
