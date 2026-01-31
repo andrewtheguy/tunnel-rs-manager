@@ -74,8 +74,9 @@ impl AppState {
 
 #[tauri::command]
 async fn list_server_groups(state: State<'_, AppState>) -> Result<Vec<ServerGroup>, String> {
-    let secrets = state.secrets_store.lock().await;
+    // Lock order: config_store first, then secrets_store (consistent with import_configs)
     let mut store = state.config_store.lock().await;
+    let secrets = state.secrets_store.lock().await;
     store.restore_auth_tokens(&secrets);
     Ok(store.list_server_groups())
 }
@@ -83,8 +84,9 @@ async fn list_server_groups(state: State<'_, AppState>) -> Result<Vec<ServerGrou
 #[tauri::command]
 async fn get_server_group(state: State<'_, AppState>, id: String) -> Result<ServerGroup, String> {
     let uuid = Uuid::parse_str(&id).map_err(|e| format!("Invalid UUID: {}", e))?;
-    let secrets = state.secrets_store.lock().await;
+    // Lock order: config_store first, then secrets_store (consistent with import_configs)
     let mut store = state.config_store.lock().await;
+    let secrets = state.secrets_store.lock().await;
     store.restore_auth_tokens(&secrets);
     store
         .get_server_group(uuid)
