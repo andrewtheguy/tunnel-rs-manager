@@ -427,12 +427,17 @@ impl ConfigStore {
     // Export/Import
     // ============================================================================
 
-    /// Export all configs (without auth tokens, since auth_token has #[serde(skip)])
+    /// Export all configs (auth_tokens are stripped to keep them in secrets.json only)
     pub fn export(&self) -> ExportData {
+        // Create a copy with auth_tokens cleared (same as save())
+        let mut config_to_export = self.clone();
+        for group in config_to_export.server_groups.values_mut() {
+            group.auth_token = None;
+        }
         ExportData {
             version: 1,
             exported_at: current_timestamp(),
-            config: self.clone(),
+            config: config_to_export,
         }
     }
 
@@ -457,7 +462,7 @@ impl ConfigStore {
 
         let now = current_timestamp();
 
-        // Import server groups (auth_token will be None since it's not serialized)
+        // Import server groups (auth_token will be None since export() strips them)
         for (id, mut group) in data.config.server_groups {
             let is_update = self.server_groups.contains_key(&id);
             if is_update {

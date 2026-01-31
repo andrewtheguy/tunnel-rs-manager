@@ -35,7 +35,13 @@ function App() {
   // Restore scroll position when returning to list view
   useEffect(() => {
     if (view === 'list' && mainContentRef.current && savedScrollPos.current > 0) {
-      mainContentRef.current.scrollTop = savedScrollPos.current;
+      // Use requestAnimationFrame to ensure DOM is fully rendered before restoring scroll
+      const rafId = requestAnimationFrame(() => {
+        if (mainContentRef.current) {
+          mainContentRef.current.scrollTop = savedScrollPos.current;
+        }
+      });
+      return () => cancelAnimationFrame(rafId);
     }
   }, [view]);
 
