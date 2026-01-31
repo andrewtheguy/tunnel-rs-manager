@@ -535,93 +535,10 @@ impl ProcessManager {
                     }
                 }
                 Some(ChildProcess::Sidecar(child)) => {
-                    // Get PID before killing so we can verify termination
-                    let pid = child.pid();
                     if let Err(e) = child.kill() {
                         guard.add_log(format!("Failed to kill process: {}", e), true);
                     } else {
                         guard.add_log("Tunnel stopped by user".to_string(), false);
-                    }
-
-                    // Wait for process to terminate with timeout loop
-                    const MAX_WAIT_MS: u64 = 2000;
-                    const POLL_INTERVAL_MS: u64 = 100;
-                    let mut waited_ms: u64 = 0;
-
-                    #[cfg(unix)]
-                    {
-                        while waited_ms < MAX_WAIT_MS {
-                            tokio::time::sleep(tokio::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
-                            waited_ms += POLL_INTERVAL_MS;
-
-                            // Check if process is still alive (kill with signal 0)
-                            let alive = unsafe { libc::kill(pid as i32, 0) == 0 };
-                            if !alive {
-                                break;
-                            }
-                        }
-
-                        // If still alive after timeout, force kill with SIGKILL
-                        let still_alive = unsafe { libc::kill(pid as i32, 0) == 0 };
-                        if still_alive {
-                            let result = unsafe { libc::kill(pid as i32, libc::SIGKILL) };
-                            if result != 0 {
-                                let err = std::io::Error::last_os_error();
-                                guard.add_log(
-                                    format!("Failed to SIGKILL process {}: {}", pid, err),
-                                    true,
-                                );
-                            } else {
-                                guard.add_log(
-                                    format!("Force killed process {} with SIGKILL", pid),
-                                    true,
-                                );
-                            }
-                        }
-                    }
-
-                    #[cfg(windows)]
-                    {
-                        use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
-                        use windows_sys::Win32::System::Threading::{
-                            OpenProcess, TerminateProcess, PROCESS_QUERY_INFORMATION, PROCESS_TERMINATE,
-                        };
-
-                        while waited_ms < MAX_WAIT_MS {
-                            tokio::time::sleep(tokio::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
-                            waited_ms += POLL_INTERVAL_MS;
-
-                            // Check if process is still alive
-                            let handle: HANDLE = unsafe {
-                                OpenProcess(PROCESS_QUERY_INFORMATION, 0, pid)
-                            };
-                            if handle == 0 {
-                                // Process no longer exists
-                                break;
-                            }
-                            unsafe { CloseHandle(handle) };
-                        }
-
-                        // If still alive after timeout, force terminate
-                        let handle: HANDLE = unsafe {
-                            OpenProcess(PROCESS_TERMINATE | PROCESS_QUERY_INFORMATION, 0, pid)
-                        };
-                        if handle != 0 {
-                            let result = unsafe { TerminateProcess(handle, 1) };
-                            if result == 0 {
-                                let err = std::io::Error::last_os_error();
-                                guard.add_log(
-                                    format!("Failed to TerminateProcess {}: {}", pid, err),
-                                    true,
-                                );
-                            } else {
-                                guard.add_log(
-                                    format!("Force terminated process {} with TerminateProcess", pid),
-                                    true,
-                                );
-                            }
-                            unsafe { CloseHandle(handle) };
-                        }
                     }
                 }
                 None => {
@@ -643,7 +560,7 @@ impl ProcessManager {
         }
     }
 
-    /// Stop all running tunnels and wait for them to finish
+    /// Stop all running tunnels
     pub async fn stop_all(&self) {
         // Collect IDs first to avoid holding lock while stopping
         let ids: Vec<Uuid> = {
@@ -655,102 +572,51 @@ impl ProcessManager {
         for id in ids {
             let _ = self.stop(id).await;
         }
-
-        // After graceful stop, check for any remaining child processes and force kill them
-        // This is safe because we're reading PIDs from instances that still have children
-        #[cfg(unix)]
-        {
-            let remaining_pids: Vec<u32> = {
-                let instances = self.instances.read().await;
-                let mut pids = Vec::new();
-                for instance in instances.values() {
-                    let guard = instance.lock().await;
-                    if let Some(ref child) = guard.child {
-                        match child {
-                            ChildProcess::Tokio(c) => {
-                                if let Some(pid) = c.id() {
-                                    pids.push(pid);
-                                }
-                            }
-                            ChildProcess::Sidecar(c) => {
-                                pids.push(c.pid());
-                            }
-                        }
-                    }
-                }
-                pids
-            };
-
-            for pid in remaining_pids {
-                unsafe {
-                    tracing::warn!("Force killing remaining process with PID {}", pid);
-                    libc::kill(pid as i32, libc::SIGKILL);
-                }
-            }
-        }
     }
 
     /// Force kill all tracked child processes immediately (for emergency shutdown)
     pub async fn force_kill_all(&self) {
-        let instances = self.instances.read().await;
-        for instance in instances.values() {
-            let mut guard = instance.lock().await;
+        let mut to_kill = Vec::new();
+        {
+            let instances = self.instances.read().await;
+            for instance in instances.values() {
+                let mut guard = instance.lock().await;
 
-            // Get PID from child if it exists
-            let pid = match guard.child {
-                Some(ref child) => match child {
-                    ChildProcess::Tokio(c) => c.id(),
-                    ChildProcess::Sidecar(c) => Some(c.pid()),
-                },
-                None => continue,
-            };
+                if let Some(child) = guard.child.take() {
+                    to_kill.push(child);
+                }
+            }
+        }
 
-            if let Some(pid) = pid {
-                #[cfg(unix)]
-                {
-                    let result = unsafe { libc::kill(pid as i32, libc::SIGKILL) };
-                    if result != 0 {
-                        tracing::error!(
-                            "Failed to SIGKILL process {}: {}",
-                            pid,
-                            std::io::Error::last_os_error()
-                        );
+        for child in to_kill {
+            match child {
+                ChildProcess::Tokio(mut child) => {
+                    if let Err(e) = child.kill().await {
+                        tracing::error!("Failed to kill process: {}", e);
                     }
                 }
-
-                #[cfg(windows)]
-                {
-                    match std::process::Command::new("taskkill")
-                        .args(["/F", "/PID", &pid.to_string()])
-                        .output()
-                    {
-                        Ok(output) => {
-                            if !output.status.success() {
-                                tracing::error!(
-                                    "taskkill failed for PID {}: {}",
-                                    pid,
-                                    String::from_utf8_lossy(&output.stderr)
-                                );
-                            }
-                        }
-                        Err(e) => {
-                            tracing::error!("Failed to spawn taskkill for PID {}: {}", pid, e);
-                        }
+                ChildProcess::Sidecar(child) => {
+                    if let Err(e) = child.kill() {
+                        tracing::error!("Failed to kill process: {}", e);
                     }
                 }
             }
+        }
 
-            // Clean up instance state
-            guard.child = None;
-            guard.status = TunnelStatus::Stopped;
+        // Clean up instance state after kill attempts to avoid Windows file locking issues.
+        {
+            let instances = self.instances.read().await;
+            for instance in instances.values() {
+                let mut guard = instance.lock().await;
+                guard.status = TunnelStatus::Stopped;
 
-            // Remove temp config file
-            if let Some(ref path) = guard.temp_config_path {
-                if let Err(e) = std::fs::remove_file(path) {
-                    tracing::warn!("Failed to remove temp config {}: {}", path.display(), e);
+                if let Some(ref path) = guard.temp_config_path {
+                    if let Err(e) = std::fs::remove_file(path) {
+                        tracing::warn!("Failed to remove temp config {}: {}", path.display(), e);
+                    }
                 }
+                guard.temp_config_path = None;
             }
-            guard.temp_config_path = None;
         }
     }
 }

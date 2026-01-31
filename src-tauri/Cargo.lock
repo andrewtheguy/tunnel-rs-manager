@@ -4277,10 +4277,9 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
 name = "tunnel-rs-manager"
-version = "0.0.25"
+version = "0.0.26"
 dependencies = [
  "dirs 5.0.1",
- "libc",
  "serde",
  "serde_json",
  "tauri",
@@ -4293,7 +4292,6 @@ dependencies = [
  "toml 0.8.2",
  "tracing",
  "uuid",
- "windows-sys 0.59.0",
 ]
 
 [[package]]

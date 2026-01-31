@@ -1,6 +1,6 @@
 [package]
 name = "tunnel-rs-manager"
-version = "0.0.25"
+version = "0.0.26"
 description = "A desktop app to manage tunnel-rs client instances"
 authors = ["you"]
 edition = "2021"
@@ -25,9 +25,3 @@ toml = "0.8"
 uuid = { version = "1", features = ["v4", "serde"] }
 dirs = "5"
 tracing = "0.1"
-
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
-
-[target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Threading"] }
