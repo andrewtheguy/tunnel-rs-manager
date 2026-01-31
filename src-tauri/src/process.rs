@@ -576,28 +576,10 @@ impl ProcessManager {
 
     /// Stop all running tunnels and wait for them to finish
     pub async fn stop_all(&self) {
-        // Collect IDs and PIDs first to avoid holding lock while stopping
-        let (ids, pids): (Vec<Uuid>, Vec<u32>) = {
+        // Collect IDs first to avoid holding lock while stopping
+        let ids: Vec<Uuid> = {
             let instances = self.instances.read().await;
-            let mut ids = Vec::new();
-            let mut pids = Vec::new();
-            for (id, instance) in instances.iter() {
-                ids.push(*id);
-                let guard = instance.lock().await;
-                if let Some(ref child) = guard.child {
-                    match child {
-                        ChildProcess::Tokio(c) => {
-                            if let Some(pid) = c.id() {
-                                pids.push(pid);
-                            }
-                        }
-                        ChildProcess::Sidecar(c) => {
-                            pids.push(c.pid());
-                        }
-                    }
-                }
-            }
-            (ids, pids)
+            instances.keys().copied().collect()
         };
 
         // Stop all instances gracefully
@@ -605,16 +587,35 @@ impl ProcessManager {
             let _ = self.stop(id).await;
         }
 
-        // Force kill any remaining processes as a safety measure
+        // After graceful stop, check for any remaining child processes and force kill them
+        // This is safe because we're reading PIDs from instances that still have children
         #[cfg(unix)]
         {
-            for pid in pids {
-                unsafe {
-                    // Check if process is still alive
-                    if libc::kill(pid as i32, 0) == 0 {
-                        tracing::warn!("Force killing remaining process with PID {}", pid);
-                        libc::kill(pid as i32, libc::SIGKILL);
+            let remaining_pids: Vec<u32> = {
+                let instances = self.instances.read().await;
+                let mut pids = Vec::new();
+                for instance in instances.values() {
+                    let guard = instance.lock().await;
+                    if let Some(ref child) = guard.child {
+                        match child {
+                            ChildProcess::Tokio(c) => {
+                                if let Some(pid) = c.id() {
+                                    pids.push(pid);
+                                }
+                            }
+                            ChildProcess::Sidecar(c) => {
+                                pids.push(c.pid());
+                            }
+                        }
                     }
+                }
+                pids
+            };
+
+            for pid in remaining_pids {
+                unsafe {
+                    tracing::warn!("Force killing remaining process with PID {}", pid);
+                    libc::kill(pid as i32, libc::SIGKILL);
                 }
             }
         }
@@ -624,26 +625,63 @@ impl ProcessManager {
     pub async fn force_kill_all(&self) {
         let instances = self.instances.read().await;
         for instance in instances.values() {
-            let guard = instance.lock().await;
-            if let Some(ref child) = guard.child {
-                let pid = match child {
+            let mut guard = instance.lock().await;
+
+            // Get PID from child if it exists
+            let pid = match guard.child {
+                Some(ref child) => match child {
                     ChildProcess::Tokio(c) => c.id(),
                     ChildProcess::Sidecar(c) => Some(c.pid()),
-                };
-                if let Some(pid) = pid {
-                    #[cfg(unix)]
-                    unsafe {
-                        libc::kill(pid as i32, libc::SIGKILL);
+                },
+                None => continue,
+            };
+
+            if let Some(pid) = pid {
+                #[cfg(unix)]
+                {
+                    let result = unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+                    if result != 0 {
+                        tracing::error!(
+                            "Failed to SIGKILL process {}: {}",
+                            pid,
+                            std::io::Error::last_os_error()
+                        );
                     }
-                    #[cfg(windows)]
+                }
+
+                #[cfg(windows)]
+                {
+                    match std::process::Command::new("taskkill")
+                        .args(["/F", "/PID", &pid.to_string()])
+                        .output()
                     {
-                        // On Windows, use taskkill
-                        let _ = std::process::Command::new("taskkill")
-                            .args(["/F", "/PID", &pid.to_string()])
-                            .spawn();
+                        Ok(output) => {
+                            if !output.status.success() {
+                                tracing::error!(
+                                    "taskkill failed for PID {}: {}",
+                                    pid,
+                                    String::from_utf8_lossy(&output.stderr)
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to spawn taskkill for PID {}: {}", pid, e);
+                        }
                     }
                 }
             }
+
+            // Clean up instance state
+            guard.child = None;
+            guard.status = TunnelStatus::Stopped;
+
+            // Remove temp config file
+            if let Some(ref path) = guard.temp_config_path {
+                if let Err(e) = std::fs::remove_file(path) {
+                    tracing::warn!("Failed to remove temp config {}: {}", path.display(), e);
+                }
+            }
+            guard.temp_config_path = None;
         }
     }
 }
