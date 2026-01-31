@@ -88,8 +88,9 @@ pub struct ServerGroup {
     pub id: Uuid,
     pub name: String,
     pub server_node_id: String,
-    /// Auth token is stored separately in secrets.json, not in configs.json
-    #[serde(skip)]
+    /// Auth token is stored in secrets.json, not configs.json.
+    /// Stripped in save() and export(); restored via restore_auth_tokens().
+    #[serde(default)]
     pub auth_token: Option<String>,
     #[serde(default)]
     pub relay_urls: Vec<String>,
@@ -272,14 +273,19 @@ impl ConfigStore {
             .map_err(|e| format!("Failed to parse config store: {}", e))
     }
 
-    /// Save config store to disk
+    /// Save config store to disk (auth_tokens are stripped to keep them in secrets.json only)
     pub fn save(&self) -> Result<(), String> {
         let path = Self::store_path()?;
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
                 .map_err(|e| format!("Failed to create config directory: {}", e))?;
         }
-        let content = serde_json::to_string_pretty(self)
+        // Create a copy with auth_tokens cleared (they're stored in secrets.json)
+        let mut store_to_save = self.clone();
+        for group in store_to_save.server_groups.values_mut() {
+            group.auth_token = None;
+        }
+        let content = serde_json::to_string_pretty(&store_to_save)
             .map_err(|e| format!("Failed to serialize config store: {}", e))?;
         fs::write(&path, content)
             .map_err(|e| format!("Failed to write config store: {}", e))
@@ -421,12 +427,17 @@ impl ConfigStore {
     // Export/Import
     // ============================================================================
 
-    /// Export all configs (without auth tokens, since auth_token has #[serde(skip)])
+    /// Export all configs (auth_tokens are stripped to keep them in secrets.json only)
     pub fn export(&self) -> ExportData {
+        // Create a copy with auth_tokens cleared (same as save())
+        let mut config_to_export = self.clone();
+        for group in config_to_export.server_groups.values_mut() {
+            group.auth_token = None;
+        }
         ExportData {
             version: 1,
             exported_at: current_timestamp(),
-            config: self.clone(),
+            config: config_to_export,
         }
     }
 
@@ -451,7 +462,7 @@ impl ConfigStore {
 
         let now = current_timestamp();
 
-        // Import server groups (auth_token will be None since it's not serialized)
+        // Import server groups (auth_token will be None since export() strips them)
         for (id, mut group) in data.config.server_groups {
             let is_update = self.server_groups.contains_key(&id);
             if is_update {
