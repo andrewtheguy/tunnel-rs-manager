@@ -512,17 +512,48 @@ impl ProcessManager {
 
             match guard.child.take() {
                 Some(ChildProcess::Tokio(mut child)) => {
-                    child
-                        .kill()
-                        .await
-                        .map_err(|e| format!("Failed to kill process: {}", e))?;
-                    guard.add_log("Tunnel stopped by user".to_string(), false);
+                    // Kill and wait for the process to actually terminate
+                    if let Err(e) = child.kill().await {
+                        guard.add_log(format!("Failed to send kill signal: {}", e), true);
+                    }
+                    // Wait for process to exit (with timeout)
+                    match tokio::time::timeout(
+                        tokio::time::Duration::from_secs(2),
+                        child.wait(),
+                    )
+                    .await
+                    {
+                        Ok(Ok(_)) => {
+                            guard.add_log("Tunnel stopped by user".to_string(), false);
+                        }
+                        Ok(Err(e)) => {
+                            guard.add_log(format!("Error waiting for process: {}", e), true);
+                        }
+                        Err(_) => {
+                            guard.add_log("Timeout waiting for process to exit".to_string(), true);
+                        }
+                    }
                 }
                 Some(ChildProcess::Sidecar(child)) => {
-                    child
-                        .kill()
-                        .map_err(|e| format!("Failed to kill process: {}", e))?;
-                    guard.add_log("Tunnel stopped by user".to_string(), false);
+                    // Get PID before killing so we can verify termination
+                    let pid = child.pid();
+                    if let Err(e) = child.kill() {
+                        guard.add_log(format!("Failed to kill process: {}", e), true);
+                    } else {
+                        guard.add_log("Tunnel stopped by user".to_string(), false);
+                    }
+                    // Wait a bit and verify the process is gone
+                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                    #[cfg(unix)]
+                    {
+                        // Check if process is still alive and force kill if needed
+                        unsafe {
+                            if libc::kill(pid as i32, 0) == 0 {
+                                // Process still alive, send SIGKILL
+                                libc::kill(pid as i32, libc::SIGKILL);
+                            }
+                        }
+                    }
                 }
                 None => {
                     // No child to kill
@@ -545,14 +576,74 @@ impl ProcessManager {
 
     /// Stop all running tunnels and wait for them to finish
     pub async fn stop_all(&self) {
-        // Collect IDs first to avoid holding lock while stopping
-        let ids: Vec<Uuid> = {
+        // Collect IDs and PIDs first to avoid holding lock while stopping
+        let (ids, pids): (Vec<Uuid>, Vec<u32>) = {
             let instances = self.instances.read().await;
-            instances.keys().copied().collect()
+            let mut ids = Vec::new();
+            let mut pids = Vec::new();
+            for (id, instance) in instances.iter() {
+                ids.push(*id);
+                let guard = instance.lock().await;
+                if let Some(ref child) = guard.child {
+                    match child {
+                        ChildProcess::Tokio(c) => {
+                            if let Some(pid) = c.id() {
+                                pids.push(pid);
+                            }
+                        }
+                        ChildProcess::Sidecar(c) => {
+                            pids.push(c.pid());
+                        }
+                    }
+                }
+            }
+            (ids, pids)
         };
 
+        // Stop all instances gracefully
         for id in ids {
             let _ = self.stop(id).await;
+        }
+
+        // Force kill any remaining processes as a safety measure
+        #[cfg(unix)]
+        {
+            for pid in pids {
+                unsafe {
+                    // Check if process is still alive
+                    if libc::kill(pid as i32, 0) == 0 {
+                        tracing::warn!("Force killing remaining process with PID {}", pid);
+                        libc::kill(pid as i32, libc::SIGKILL);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Force kill all tracked child processes immediately (for emergency shutdown)
+    pub async fn force_kill_all(&self) {
+        let instances = self.instances.read().await;
+        for instance in instances.values() {
+            let guard = instance.lock().await;
+            if let Some(ref child) = guard.child {
+                let pid = match child {
+                    ChildProcess::Tokio(c) => c.id(),
+                    ChildProcess::Sidecar(c) => Some(c.pid()),
+                };
+                if let Some(pid) = pid {
+                    #[cfg(unix)]
+                    unsafe {
+                        libc::kill(pid as i32, libc::SIGKILL);
+                    }
+                    #[cfg(windows)]
+                    {
+                        // On Windows, use taskkill
+                        let _ = std::process::Command::new("taskkill")
+                            .args(["/F", "/PID", &pid.to_string()])
+                            .spawn();
+                    }
+                }
+            }
         }
     }
 }

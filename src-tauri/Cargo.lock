@@ -4280,6 +4280,7 @@ name = "tunnel-rs-manager"
 version = "0.0.23"
 dependencies = [
  "dirs 5.0.1",
+ "libc",
  "serde",
  "serde_json",
  "tauri",

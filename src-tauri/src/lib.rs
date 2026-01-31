@@ -74,14 +74,18 @@ impl AppState {
 
 #[tauri::command]
 async fn list_server_groups(state: State<'_, AppState>) -> Result<Vec<ServerGroup>, String> {
-    let store = state.config_store.lock().await;
+    let secrets = state.secrets_store.lock().await;
+    let mut store = state.config_store.lock().await;
+    store.restore_auth_tokens(&secrets);
     Ok(store.list_server_groups())
 }
 
 #[tauri::command]
 async fn get_server_group(state: State<'_, AppState>, id: String) -> Result<ServerGroup, String> {
     let uuid = Uuid::parse_str(&id).map_err(|e| format!("Invalid UUID: {}", e))?;
-    let store = state.config_store.lock().await;
+    let secrets = state.secrets_store.lock().await;
+    let mut store = state.config_store.lock().await;
+    store.restore_auth_tokens(&secrets);
     store
         .get_server_group(uuid)
         .cloned()
@@ -624,11 +628,16 @@ pub fn run() {
                         }
                         Err(_) => {
                             tracing::error!(
-                                "Shutdown timeout after {} seconds, forcing exit",
+                                "Shutdown timeout after {} seconds, force killing all processes",
                                 SHUTDOWN_TIMEOUT.as_secs()
                             );
+                            // Force kill any remaining processes
+                            state.process_manager.force_kill_all().await;
                         }
                     }
+
+                    // Final safety: force kill all before exit to ensure no orphans
+                    state.process_manager.force_kill_all().await;
                 }
                 // Force exit without re-triggering ExitRequested
                 std::process::exit(0);
