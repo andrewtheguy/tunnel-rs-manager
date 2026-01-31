@@ -88,8 +88,8 @@ pub struct ServerGroup {
     pub id: Uuid,
     pub name: String,
     pub server_node_id: String,
-    /// Auth token is stored separately in secrets.json, not in configs.json.
-    /// Populated from secrets at runtime via restore_auth_tokens().
+    /// Auth token is stored in secrets.json, not configs.json.
+    /// Stripped in save() and export(); restored via restore_auth_tokens().
     #[serde(default)]
     pub auth_token: Option<String>,
     #[serde(default)]
