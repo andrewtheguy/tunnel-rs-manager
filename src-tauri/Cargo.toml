@@ -1,6 +1,6 @@
 [package]
 name = "tunnel-rs-manager"
-version = "0.0.25"
+version = "0.0.26"
 description = "A desktop app to manage tunnel-rs client instances"
 authors = ["you"]
 edition = "2021"
