@@ -585,17 +585,6 @@ impl ProcessManager {
                 if let Some(child) = guard.child.take() {
                     to_kill.push(child);
                 }
-
-                // Clean up instance state
-                guard.status = TunnelStatus::Stopped;
-
-                // Remove temp config file
-                if let Some(ref path) = guard.temp_config_path {
-                    if let Err(e) = std::fs::remove_file(path) {
-                        tracing::warn!("Failed to remove temp config {}: {}", path.display(), e);
-                    }
-                }
-                guard.temp_config_path = None;
             }
         }
 
@@ -611,6 +600,22 @@ impl ProcessManager {
                         tracing::error!("Failed to kill process: {}", e);
                     }
                 }
+            }
+        }
+
+        // Clean up instance state after kill attempts to avoid Windows file locking issues.
+        {
+            let instances = self.instances.read().await;
+            for instance in instances.values() {
+                let mut guard = instance.lock().await;
+                guard.status = TunnelStatus::Stopped;
+
+                if let Some(ref path) = guard.temp_config_path {
+                    if let Err(e) = std::fs::remove_file(path) {
+                        tracing::warn!("Failed to remove temp config {}: {}", path.display(), e);
+                    }
+                }
+                guard.temp_config_path = None;
             }
         }
     }
