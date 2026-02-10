@@ -138,6 +138,43 @@ impl ProcessManager {
         self.custom_binary_path.read().await.is_none()
     }
 
+    /// Get the version of the currently configured binary
+    pub async fn get_binary_version(&self) -> Result<String, String> {
+        let custom_path = self.custom_binary_path.read().await.clone();
+
+        if let Some(binary_path) = custom_path {
+            let output = tokio::process::Command::new(&binary_path)
+                .arg("--version")
+                .output()
+                .await
+                .map_err(|e| format!("Failed to run binary: {}", e))?;
+
+            let version_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            Ok(version_str)
+        } else {
+            let app_handle = self
+                .app_handle
+                .read()
+                .await
+                .clone()
+                .ok_or_else(|| "App handle not set".to_string())?;
+
+            let sidecar_command = app_handle
+                .shell()
+                .sidecar("tunnel-rs")
+                .map_err(|e| format!("Failed to create sidecar command: {}", e))?
+                .args(["--version"]);
+
+            let output = sidecar_command
+                .output()
+                .await
+                .map_err(|e| format!("Failed to run sidecar: {}", e))?;
+
+            let version_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            Ok(version_str)
+        }
+    }
+
     /// Get all running instances
     pub async fn list_instances(&self) -> Vec<TunnelInstanceView> {
         let instances = self.instances.read().await;

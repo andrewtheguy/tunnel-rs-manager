@@ -462,6 +462,11 @@ async fn is_using_bundled_binary(state: State<'_, AppState>) -> Result<bool, Str
     Ok(state.process_manager.is_using_bundled().await)
 }
 
+#[tauri::command]
+async fn get_binary_version(state: State<'_, AppState>) -> Result<String, String> {
+    state.process_manager.get_binary_version().await
+}
+
 // ============================================================================
 // Tray Icon Setup
 // ============================================================================
@@ -557,6 +562,7 @@ pub fn run() {
             get_custom_binary_path,
             set_custom_binary_path,
             is_using_bundled_binary,
+            get_binary_version,
         ])
         .setup(|app| {
             // Set up system tray

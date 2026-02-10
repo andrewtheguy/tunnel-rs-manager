@@ -4277,7 +4277,7 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
 name = "tunnel-rs-manager"
-version = "0.0.27"
+version = "0.0.28"
 dependencies = [
  "dirs 5.0.1",
  "serde",

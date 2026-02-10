@@ -5,17 +5,20 @@ import { open } from '@tauri-apps/plugin-dialog';
 export function useBinaryPath() {
   const [customBinaryPath, setCustomBinaryPath] = useState<string | null>(null);
   const [isUsingBundled, setIsUsingBundled] = useState(true);
+  const [binaryVersion, setBinaryVersion] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const [path, bundled] = await Promise.all([
+      const [path, bundled, version] = await Promise.all([
         invoke<string | null>('get_custom_binary_path'),
         invoke<boolean>('is_using_bundled_binary'),
+        invoke<string>('get_binary_version').catch(() => null),
       ]);
       setCustomBinaryPath(path);
       setIsUsingBundled(bundled);
+      setBinaryVersion(version);
     } catch (e) {
       console.error('Failed to get binary path:', e);
     } finally {
@@ -59,6 +62,7 @@ export function useBinaryPath() {
   return {
     customBinaryPath,
     isUsingBundled,
+    binaryVersion,
     loading,
     refresh,
     selectCustomBinaryPath,

@@ -14,7 +14,7 @@ function App() {
   const { serverGroups, loading: groupsLoading, createServerGroup, updateServerGroup, deleteServerGroup, getServerGroup, refresh: refreshGroups } = useServerGroups();
   const { forwardings, loading: forwardingsLoading, createForwarding, updateForwarding, deleteForwarding, getForwardingsByGroup, getForwarding, refresh: refreshForwardings } = useForwardings();
   const { instances, startTunnel, stopTunnel, loading: instancesLoading } = useTunnelInstances();
-  const { customBinaryPath, isUsingBundled, selectCustomBinaryPath, useBundledBinary } = useBinaryPath();
+  const { customBinaryPath, isUsingBundled, binaryVersion, selectCustomBinaryPath, useBundledBinary } = useBinaryPath();
 
   // Hidden file input for import
   const importInputRef = useRef<HTMLInputElement>(null);
@@ -453,7 +453,7 @@ function App() {
 
             <div className="binary-path-row">
               <span className="binary-path-info" title={isUsingBundled ? 'Bundled' : (customBinaryPath ?? 'Not set')}>
-                tunnel-rs binary: {isUsingBundled ? 'Bundled' : (customBinaryPath ?? 'Not set')}
+                tunnel-rs binary: {isUsingBundled ? 'Bundled' : (customBinaryPath ?? 'Not set')}{binaryVersion ? ` (${binaryVersion})` : ''}
               </span>
               <div className="binary-path-actions">
                 <button
