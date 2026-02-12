@@ -45,7 +45,7 @@ export function ServerGroupCard({
     const hasRunningForwarding = runningCount > 0;
 
     return (
-        <div className={`server-group-card ${hasRunningForwarding ? 'active' : ''}`}>
+        <div id={`group-card-${group.id}`} className={`server-group-card ${hasRunningForwarding ? 'active' : ''}`}>
             <div className="group-header">
                 <div className="group-info">
                     <h3 className="group-name">{group.name}</h3>
