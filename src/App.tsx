@@ -292,19 +292,30 @@ function App() {
     }
   }, [refreshGroups, refreshForwardings]);
 
+  // Scroll a group card into view in the main content area
+  const scrollToGroupCard = useCallback((groupId: string) => {
+    if (view !== 'list') return;
+    requestAnimationFrame(() => {
+      const el = document.getElementById(`group-card-${groupId}`);
+      el?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    });
+  }, [view]);
+
   // Sidebar selection handlers
   const handleSelectGroup = useCallback((id: string) => {
     setSelectedGroupId(id);
     setSelectedForwardingId(null);
-  }, []);
+    scrollToGroupCard(id);
+  }, [scrollToGroupCard]);
 
   const handleSelectForwarding = useCallback((id: string) => {
     const forwarding = getForwarding(id);
     if (forwarding) {
       setSelectedGroupId(forwarding.server_group_id);
       setSelectedForwardingId(id);
+      scrollToGroupCard(forwarding.server_group_id);
     }
-  }, [getForwarding]);
+  }, [getForwarding, scrollToGroupCard]);
 
   // Memoized form data
   const editingGroupFormData = useMemo(
