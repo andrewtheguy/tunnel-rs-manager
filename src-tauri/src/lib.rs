@@ -613,8 +613,8 @@ pub fn run() {
                 .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
                 .is_err()
             {
-                // Shutdown already in progress, ignore this event
-                api.prevent_exit();
+                // Shutdown already in progress — don't call prevent_exit() since the
+                // channel may already be dropped (causes panic in tauri's unwrap).
                 return;
             }
 
