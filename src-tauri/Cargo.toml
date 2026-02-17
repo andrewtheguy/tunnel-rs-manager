@@ -13,11 +13,12 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri = { version = "2", default-features = false, features = ["compression", "dynamic-acl", "tray-icon", "image-png"] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-shell = "2"
 tauri-plugin-fs = "2"
+
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["process", "io-util", "sync", "macros", "time"] }
@@ -25,3 +26,18 @@ toml = "0.8"
 uuid = { version = "1", features = ["v4", "serde"] }
 dirs = "5"
 tracing = "0.1"
+
+[features]
+default = ["cef"]
+cef = ["tauri/cef"]
+
+# Pinned to feat/cef branch commit 2026-02-15
+# https://github.com/tauri-apps/tauri/tree/feat/cef
+[patch.crates-io]
+tauri = { git = "https://github.com/tauri-apps/tauri", rev = "465b42cb21a015cd6c210907e26699e10745a533" }
+tauri-build = { git = "https://github.com/tauri-apps/tauri", rev = "465b42cb21a015cd6c210907e26699e10745a533" }
+tauri-plugin = { git = "https://github.com/tauri-apps/tauri", rev = "465b42cb21a015cd6c210907e26699e10745a533" }
+tauri-utils = { git = "https://github.com/tauri-apps/tauri", rev = "465b42cb21a015cd6c210907e26699e10745a533" }
+tauri-runtime = { git = "https://github.com/tauri-apps/tauri", rev = "465b42cb21a015cd6c210907e26699e10745a533" }
+tauri-macros = { git = "https://github.com/tauri-apps/tauri", rev = "465b42cb21a015cd6c210907e26699e10745a533" }
+tauri-codegen = { git = "https://github.com/tauri-apps/tauri", rev = "465b42cb21a015cd6c210907e26699e10745a533" }

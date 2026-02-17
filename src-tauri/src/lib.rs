@@ -16,6 +16,8 @@ use tauri::{
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
+type AppRuntime = tauri::Cef;
+
 /// Guard to prevent multiple shutdown handlers from running
 static SHUTDOWN_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
@@ -24,7 +26,7 @@ pub struct AppState {
     config_store: Mutex<ConfigStore>,
     secrets_store: Mutex<SecretsStore>,
     app_settings: Mutex<AppSettings>,
-    process_manager: Arc<ProcessManager>,
+    process_manager: Arc<ProcessManager<AppRuntime>>,
     config_load_error: Option<String>,
 }
 
@@ -471,7 +473,7 @@ async fn get_binary_version(state: State<'_, AppState>) -> Result<String, String
 // Tray Icon Setup
 // ============================================================================
 
-fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+fn setup_tray(app: &tauri::App<AppRuntime>) -> Result<(), Box<dyn std::error::Error>> {
     let show_item = MenuItem::with_id(app, "show", "Show", true, None::<&str>)?;
     let separator = PredefinedMenuItem::separator(app)?;
     let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
@@ -529,8 +531,9 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 // ============================================================================
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+#[tauri::cef_entry_point]
 pub fn run() {
-    let app = tauri::Builder::default()
+    let app = tauri::Builder::<AppRuntime>::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())

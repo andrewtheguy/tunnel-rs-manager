@@ -4,7 +4,7 @@ use crate::config::TunnelClientConfig;
 use std::collections::{HashMap, VecDeque};
 use std::process::Stdio;
 use std::sync::Arc;
-use tauri::AppHandle;
+use tauri::{AppHandle, Runtime};
 use tauri_plugin_shell::process::CommandChild;
 use tauri_plugin_shell::ShellExt;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -102,19 +102,19 @@ impl From<&TunnelInstance> for TunnelInstanceView {
 }
 
 /// Manager for all tunnel processes
-pub struct ProcessManager {
+pub struct ProcessManager<R: Runtime> {
     instances: RwLock<HashMap<Uuid, Arc<Mutex<TunnelInstance>>>>,
     custom_binary_path: RwLock<Option<String>>,
-    app_handle: RwLock<Option<AppHandle>>,
+    app_handle: RwLock<Option<AppHandle<R>>>,
 }
 
-impl Default for ProcessManager {
+impl<R: Runtime> Default for ProcessManager<R> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl ProcessManager {
+impl<R: Runtime> ProcessManager<R> {
     pub fn new() -> Self {
         Self {
             instances: RwLock::new(HashMap::new()),
@@ -124,7 +124,7 @@ impl ProcessManager {
     }
 
     /// Set the app handle for sidecar spawning
-    pub async fn set_app_handle(&self, handle: AppHandle) {
+    pub async fn set_app_handle(&self, handle: AppHandle<R>) {
         *self.app_handle.write().await = Some(handle);
     }
 

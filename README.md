@@ -126,10 +126,39 @@ tunnel-rs-manager/
 └── package.json
 ```
 
+### CEF (Chromium Embedded Framework)
+
+This project uses the experimental [feat/cef](https://github.com/tauri-apps/tauri/tree/feat/cef) branch of Tauri to bundle Chromium instead of relying on the system webview. This ensures consistent rendering across platforms.
+
+The Tauri crates are pinned to a specific commit from the `feat/cef` branch via `[patch.crates-io]` in `src-tauri/Cargo.toml`.
+
+#### Prerequisites
+
+Install the Tauri CLI from the `feat/cef` branch (the npm `@tauri-apps/cli` does not include CEF support):
+
+```bash
+cargo install tauri-cli --git https://github.com/tauri-apps/tauri --rev 465b42cb21a015cd6c210907e26699e10745a533
+```
+
+You also need the `x86_64-apple-darwin` target for universal macOS builds:
+
+```bash
+rustup target add x86_64-apple-darwin
+```
+
+#### How it works
+
+- `src-tauri/Cargo.toml` defines a `cef` feature (enabled by default) that activates `tauri/cef`
+- The Rust code uses `tauri::Cef` as the runtime instead of the default `tauri::Wry`
+- The `#[tauri::cef_entry_point]` attribute is required on the app entry point
+- `ProcessManager` is generic over `R: Runtime` to support the CEF runtime
+- The `package.json` `tauri` script uses `cargo tauri` (not the npm CLI) to invoke the CEF-enabled CLI
+
 ### Tech Stack
 
 - **Frontend**: React 18, TypeScript, Vite
-- **Backend**: Tauri 2, Rust
+- **Backend**: Tauri 2, Rust (CEF branch)
+- **Renderer**: Chromium Embedded Framework (CEF)
 - **Process Management**: Tokio async runtime
 
 ## License
