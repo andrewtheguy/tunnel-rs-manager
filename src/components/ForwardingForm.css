@@ -122,3 +122,19 @@
     opacity: 0.5;
     cursor: not-allowed;
 }
+
+.forwarding-form .input-error {
+    border-color: rgba(239, 68, 68, 0.5) !important;
+}
+
+.forwarding-form .input-error:focus {
+    border-color: #ef4444 !important;
+    box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.2) !important;
+}
+
+.forwarding-form .field-error {
+    display: block;
+    margin-top: 4px;
+    font-size: 12px;
+    color: #fca5a5;
+}
