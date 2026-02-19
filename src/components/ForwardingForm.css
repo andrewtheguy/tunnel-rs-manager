@@ -123,13 +123,13 @@
     cursor: not-allowed;
 }
 
-.forwarding-form .input-error {
-    border-color: rgba(239, 68, 68, 0.5) !important;
+.forwarding-form .form-group input.input-error {
+    border-color: rgba(239, 68, 68, 0.5);
 }
 
-.forwarding-form .input-error:focus {
-    border-color: #ef4444 !important;
-    box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.2) !important;
+.forwarding-form .form-group input.input-error:focus {
+    border-color: #ef4444;
+    box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.2);
 }
 
 .forwarding-form .field-error {

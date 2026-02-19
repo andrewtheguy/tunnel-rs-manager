@@ -7,7 +7,8 @@ import './ForwardingForm.css';
 // Valid hostname: letters, digits, hyphens, dots (no leading/trailing dot or hyphen per label)
 const HOST_RE = /^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\.)*[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?$/;
 // Valid IPv4
-const IPV4_RE = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/;
+const IPV4_OCTET = '(?:25[0-5]|2[0-4]\\d|1\\d{2}|[1-9]?\\d)';
+const IPV4_RE = new RegExp(`^${IPV4_OCTET}\\.${IPV4_OCTET}\\.${IPV4_OCTET}\\.${IPV4_OCTET}$`);
 // Valid IPv6 in brackets
 const IPV6_BRACKET_RE = /^\[[\da-fA-F:]+\]$/;
 
