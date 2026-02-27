@@ -2,7 +2,7 @@ import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { save } from '@tauri-apps/plugin-dialog';
 import { writeTextFile } from '@tauri-apps/plugin-fs';
-import { Sidebar, ServerGroupCard, ServerGroupForm, ForwardingForm, ConfirmDialog } from './components';
+import { Sidebar, ServerGroupCard, ServerGroupForm, ForwardingForm, ConfirmDialog, PassphraseDialog } from './components';
 import { useServerGroups, useForwardings, useTunnelInstances, useBinaryPath } from './hooks';
 import type { ServerGroup, Forwarding, ServerGroupFormData, ForwardingFormData, ImportResult } from './types';
 import { serverGroupToForm, forwardingToForm } from './types';
@@ -31,6 +31,15 @@ function App() {
   const [addForwardingToGroupId, setAddForwardingToGroupId] = useState<string | null>(null);
   const [pendingDelete, setPendingDelete] = useState<{ type: 'group' | 'forwarding'; id: string; name: string } | null>(null);
   const [deleting, setDeleting] = useState(false);
+
+  // Passphrase dialog state
+  const [showExportPassphrase, setShowExportPassphrase] = useState(false);
+  const [showImportPassphrase, setShowImportPassphrase] = useState(false);
+  const [importJson, setImportJson] = useState<string | null>(null);
+  const [exportLoading, setExportLoading] = useState(false);
+  const [importLoading, setImportLoading] = useState(false);
+  const [exportError, setExportError] = useState<string | undefined>();
+  const [importError, setImportError] = useState<string | undefined>();
 
   // Restore scroll position when returning to list view
   useEffect(() => {
@@ -229,27 +238,66 @@ function App() {
   }, [useBundledBinary]);
 
   // Export/Import handlers
-  const handleExport = useCallback(async () => {
-    try {
-      const json = await invoke<string>('export_configs');
+  const handleExport = useCallback(() => {
+    setExportError(undefined);
+    setShowExportPassphrase(true);
+  }, []);
 
-      // Open save dialog
+  const performExport = useCallback(async (passphrase: string | null) => {
+    setExportLoading(true);
+    setExportError(undefined);
+    try {
+      const json = await invoke<string>('export_configs', { passphrase });
+      setShowExportPassphrase(false);
+
       const filePath = await save({
         defaultPath: 'tunnel-rs-configs.json',
         filters: [{ name: 'JSON', extensions: ['json'] }],
       });
-
       if (filePath) {
         await writeTextFile(filePath, json);
       }
     } catch (e) {
-      alert(`Failed to export configs: ${e instanceof Error ? e.message : e}`);
+      setExportError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setExportLoading(false);
     }
   }, []);
+
+  const handleExportSubmit = useCallback((passphrase: string) => performExport(passphrase), [performExport]);
+  const handleExportSkip = useCallback(() => performExport(null), [performExport]);
 
   const handleImportClick = useCallback(() => {
     importInputRef.current?.click();
   }, []);
+
+  const doImport = useCallback(async (json: string, passphrase: string | null) => {
+    const result = await invoke<ImportResult>('import_configs', { json, passphrase });
+
+    await Promise.all([refreshGroups(), refreshForwardings()]);
+
+    if (result.success) {
+      const messages: string[] = [];
+      if (result.groups_imported > 0) {
+        messages.push(`${result.groups_imported} server group(s) imported`);
+      }
+      if (result.forwardings_imported > 0) {
+        messages.push(`${result.forwardings_imported} forwarding(s) imported`);
+      }
+      if (result.groups_skipped > 0) {
+        messages.push(`${result.groups_skipped} server group(s) skipped`);
+      }
+      if (result.forwardings_skipped > 0) {
+        messages.push(`${result.forwardings_skipped} forwarding(s) skipped`);
+      }
+      if (result.errors.length > 0) {
+        messages.push(`Warnings: ${result.errors.join(', ')}`);
+      }
+      alert(`Import completed:\n${messages.join('\n')}`);
+    } else {
+      alert(`Import failed:\n${result.errors.join('\n')}`);
+    }
+  }, [refreshGroups, refreshForwardings]);
 
   const handleImportFile = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -257,40 +305,36 @@ function App() {
 
     try {
       const json = await file.text();
-      const result = await invoke<ImportResult>('import_configs', { json });
+      const hasCreds = await invoke<boolean>('check_import_has_credentials', { json });
 
-      // Refresh data in parallel
-      await Promise.all([refreshGroups(), refreshForwardings()]);
-
-      // Show result
-      if (result.success) {
-        const messages: string[] = [];
-        if (result.groups_imported > 0) {
-          messages.push(`${result.groups_imported} server group(s) imported`);
-        }
-        if (result.forwardings_imported > 0) {
-          messages.push(`${result.forwardings_imported} forwarding(s) imported`);
-        }
-        if (result.groups_skipped > 0) {
-          messages.push(`${result.groups_skipped} server group(s) skipped`);
-        }
-        if (result.forwardings_skipped > 0) {
-          messages.push(`${result.forwardings_skipped} forwarding(s) skipped`);
-        }
-        if (result.errors.length > 0) {
-          messages.push(`Warnings: ${result.errors.join(', ')}`);
-        }
-        alert(`Import completed:\n${messages.join('\n')}`);
+      if (hasCreds) {
+        setImportJson(json);
+        setImportError(undefined);
+        setShowImportPassphrase(true);
       } else {
-        alert(`Import failed:\n${result.errors.join('\n')}`);
+        await doImport(json, null);
       }
     } catch (e) {
       alert(`Failed to import configs: ${e instanceof Error ? e.message : e}`);
     } finally {
-      // Reset file input so the same file can be imported again
       e.target.value = '';
     }
-  }, [refreshGroups, refreshForwardings]);
+  }, [doImport]);
+
+  const handleImportSubmit = useCallback(async (passphrase: string) => {
+    if (!importJson) return;
+    setImportLoading(true);
+    setImportError(undefined);
+    try {
+      await doImport(importJson, passphrase);
+      setShowImportPassphrase(false);
+      setImportJson(null);
+    } catch (e) {
+      setImportError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setImportLoading(false);
+    }
+  }, [importJson, doImport]);
 
   // Scroll a group card into view in the main content area
   const scrollToGroupCard = useCallback((groupId: string) => {
@@ -495,6 +539,27 @@ function App() {
           onConfirm={handleConfirmDelete}
           onCancel={handleCancelDelete}
           loading={deleting}
+        />
+      )}
+
+      {showExportPassphrase && (
+        <PassphraseDialog
+          mode="export"
+          onSubmit={handleExportSubmit}
+          onSkip={handleExportSkip}
+          onCancel={() => setShowExportPassphrase(false)}
+          loading={exportLoading}
+          error={exportError}
+        />
+      )}
+
+      {showImportPassphrase && (
+        <PassphraseDialog
+          mode="import"
+          onSubmit={handleImportSubmit}
+          onCancel={() => { setShowImportPassphrase(false); setImportJson(null); }}
+          loading={importLoading}
+          error={importError}
         />
       )}
     </div>

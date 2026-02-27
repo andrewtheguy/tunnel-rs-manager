@@ -1,10 +1,13 @@
 //! Tauri backend for tunnel-rs-manager
 
 mod config;
+mod crypto;
 mod process;
 
 use config::{AppSettings, ConfigStore, ExportData, Forwarding, ImportResult, SecretsStore, ServerGroup};
+use crypto::EncryptedToken;
 use process::{ProcessManager, TunnelInstanceView};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tauri::{
@@ -22,7 +25,7 @@ static SHUTDOWN_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 /// Application state shared across commands
 pub struct AppState {
     config_store: Mutex<ConfigStore>,
-    secrets_store: Mutex<SecretsStore>,
+    secrets_store: SecretsStore,
     app_settings: Mutex<AppSettings>,
     process_manager: Arc<ProcessManager>,
     config_load_error: Option<String>,
@@ -39,15 +42,9 @@ impl AppState {
             }
         };
 
-        let secrets_store = match SecretsStore::load() {
-            Ok(store) => store,
-            Err(e) => {
-                tracing::error!("Failed to load secrets store: {}. Using default.", e);
-                SecretsStore::default()
-            }
-        };
+        let secrets_store = SecretsStore::new();
 
-        // Restore auth tokens from secrets store
+        // Restore auth tokens from secrets store (OS keyring)
         config_store.restore_secrets(&secrets_store);
 
         let app_settings = match AppSettings::load() {
@@ -60,7 +57,7 @@ impl AppState {
 
         Self {
             config_store: Mutex::new(config_store),
-            secrets_store: Mutex::new(secrets_store),
+            secrets_store,
             app_settings: Mutex::new(app_settings),
             process_manager: Arc::new(ProcessManager::new()),
             config_load_error,
@@ -74,20 +71,16 @@ impl AppState {
 
 #[tauri::command]
 async fn list_server_groups(state: State<'_, AppState>) -> Result<Vec<ServerGroup>, String> {
-    // Lock order: config_store first, then secrets_store (consistent with import_configs)
     let mut store = state.config_store.lock().await;
-    let secrets = state.secrets_store.lock().await;
-    store.restore_secrets(&secrets);
+    store.restore_secrets(&state.secrets_store);
     Ok(store.list_server_groups())
 }
 
 #[tauri::command]
 async fn get_server_group(state: State<'_, AppState>, id: String) -> Result<ServerGroup, String> {
     let uuid = Uuid::parse_str(&id).map_err(|e| format!("Invalid UUID: {}", e))?;
-    // Lock order: config_store first, then secrets_store (consistent with import_configs)
     let mut store = state.config_store.lock().await;
-    let secrets = state.secrets_store.lock().await;
-    store.restore_secrets(&secrets);
+    store.restore_secrets(&state.secrets_store);
     store
         .get_server_group(uuid)
         .cloned()
@@ -133,11 +126,8 @@ async fn create_server_group(
     }
 
     // Save tokens to secrets store (if this fails, user can re-edit to add tokens)
-    {
-        let mut secrets = state.secrets_store.lock().await;
-        secrets.set_token(&server_node_id, &auth_token)?;
-        secrets.set_alpn_token(&server_node_id, &alpn_token)?;
-    }
+    state.secrets_store.set_token(&server_node_id, &auth_token)?;
+    state.secrets_store.set_alpn_token(&server_node_id, &alpn_token)?;
 
     Ok(group)
 }
@@ -192,14 +182,11 @@ async fn update_server_group(
     }
 
     // Update secrets store: set the new tokens first, then clean up old if node id changed
-    {
-        let mut secrets = state.secrets_store.lock().await;
-        secrets.set_token(&server_node_id, &auth_token)?;
-        secrets.set_alpn_token(&server_node_id, &alpn_token)?;
-        if old_server_node_id != server_node_id {
-            let _ = secrets.remove_token(&old_server_node_id);
-            let _ = secrets.remove_alpn_token(&old_server_node_id);
-        }
+    state.secrets_store.set_token(&server_node_id, &auth_token)?;
+    state.secrets_store.set_alpn_token(&server_node_id, &alpn_token)?;
+    if old_server_node_id != server_node_id {
+        let _ = state.secrets_store.remove_token(&old_server_node_id);
+        let _ = state.secrets_store.remove_alpn_token(&old_server_node_id);
     }
 
     Ok(group)
@@ -225,9 +212,8 @@ async fn delete_server_group(state: State<'_, AppState>, id: String) -> Result<(
 
     // Clean up auth token and ALPN token from secrets store
     if let Some(node_id) = server_node_id {
-        let mut secrets = state.secrets_store.lock().await;
-        let _ = secrets.remove_token(&node_id);
-        let _ = secrets.remove_alpn_token(&node_id);
+        let _ = state.secrets_store.remove_token(&node_id);
+        let _ = state.secrets_store.remove_alpn_token(&node_id);
     }
 
     Ok(())
@@ -361,28 +347,148 @@ fn get_config_load_error(state: State<'_, AppState>) -> Option<String> {
 // ============================================================================
 
 #[tauri::command]
-async fn export_configs(state: State<'_, AppState>) -> Result<String, String> {
+async fn export_configs(
+    state: State<'_, AppState>,
+    passphrase: Option<String>,
+) -> Result<String, String> {
+    if let Some(ref pass) = passphrase {
+        crypto::validate_passphrase(pass)?;
+    }
     let store = state.config_store.lock().await;
     let export_data = store.export();
-    serde_json::to_string_pretty(&export_data)
+
+    // Serialize to JSON Value so we can inject encrypted tokens per server group
+    let mut value = serde_json::to_value(&export_data)
+        .map_err(|e| format!("Failed to serialize export data: {}", e))?;
+
+    if let Some(ref pass) = passphrase {
+        if let Some(groups) = value
+            .get_mut("config")
+            .and_then(|c| c.get_mut("server_groups"))
+            .and_then(|g| g.as_object_mut())
+        {
+            for (_, group) in groups.iter_mut() {
+                let node_id = group
+                    .get("server_node_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+
+                if let Some(auth) = state.secrets_store.get_token(&node_id) {
+                    let encrypted = crypto::encrypt_token(&auth, pass)?;
+                    group["auth_token"] = serde_json::to_value(&encrypted)
+                        .map_err(|e| format!("Failed to serialize encrypted token: {}", e))?;
+                }
+                if let Some(alpn) = state.secrets_store.get_alpn_token(&node_id) {
+                    let encrypted = crypto::encrypt_token(&alpn, pass)?;
+                    group["alpn_token"] = serde_json::to_value(&encrypted)
+                        .map_err(|e| format!("Failed to serialize encrypted token: {}", e))?;
+                }
+            }
+        }
+    }
+
+    serde_json::to_string_pretty(&value)
         .map_err(|e| format!("Failed to serialize export data: {}", e))
 }
 
 #[tauri::command]
-async fn import_configs(state: State<'_, AppState>, json: String) -> Result<ImportResult, String> {
-    // Parse the import data
-    let export_data: ExportData = serde_json::from_str(&json)
+async fn import_configs(
+    state: State<'_, AppState>,
+    json: String,
+    passphrase: Option<String>,
+) -> Result<ImportResult, String> {
+    // Parse as Value so we can extract encrypted tokens before deserializing
+    let mut value: serde_json::Value = serde_json::from_str(&json)
         .map_err(|e| format!("Invalid import data: {}", e))?;
 
-    // Import configs (without auth tokens - users must add them manually)
+    // Extract and decrypt tokens from server groups
+    let mut decrypted_tokens: HashMap<String, (Option<String>, Option<String>)> = HashMap::new();
+
+    if let Some(groups) = value
+        .get_mut("config")
+        .and_then(|c| c.get_mut("server_groups"))
+        .and_then(|g| g.as_object_mut())
+    {
+        for (_, group) in groups.iter_mut() {
+            let node_id = group
+                .get("server_node_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            let mut auth = None;
+            let mut alpn = None;
+
+            // Check if auth_token is an encrypted object (has "alg" field)
+            if group.get("auth_token").map_or(false, |v| v.is_object()) {
+                let envelope: EncryptedToken = serde_json::from_value(group["auth_token"].clone())
+                    .map_err(|e| format!("Invalid encrypted auth_token: {}", e))?;
+                let pass = passphrase.as_deref()
+                    .ok_or_else(|| "Passphrase required to import encrypted credentials".to_string())?;
+                auth = Some(crypto::decrypt_token(&envelope, pass)?);
+                group["auth_token"] = serde_json::Value::Null;
+            }
+
+            if group.get("alpn_token").map_or(false, |v| v.is_object()) {
+                let envelope: EncryptedToken = serde_json::from_value(group["alpn_token"].clone())
+                    .map_err(|e| format!("Invalid encrypted alpn_token: {}", e))?;
+                let pass = passphrase.as_deref()
+                    .ok_or_else(|| "Passphrase required to import encrypted credentials".to_string())?;
+                alpn = Some(crypto::decrypt_token(&envelope, pass)?);
+                group["alpn_token"] = serde_json::Value::Null;
+            }
+
+            if auth.is_some() || alpn.is_some() {
+                decrypted_tokens.insert(node_id, (auth, alpn));
+            }
+        }
+    }
+
+    // Now deserialize the cleaned JSON into ExportData
+    let export_data: ExportData = serde_json::from_value(value)
+        .map_err(|e| format!("Invalid import data: {}", e))?;
+
     let mut store = state.config_store.lock().await;
     let result = store.import(export_data);
 
-    // Rehydrate in-memory auth tokens from secrets store after import
-    let secrets_store = state.secrets_store.lock().await;
-    store.restore_secrets(&secrets_store);
+    // Only persist tokens if the import succeeded (avoids orphan secrets on
+    // version mismatch or save failure)
+    if result.success {
+        for (node_id, (auth, alpn)) in decrypted_tokens {
+            if let Some(a) = auth {
+                state.secrets_store.set_token(&node_id, &a)?;
+            }
+            if let Some(a) = alpn {
+                state.secrets_store.set_alpn_token(&node_id, &a)?;
+            }
+        }
+
+        // Rehydrate in-memory auth tokens from secrets store after import
+        store.restore_secrets(&state.secrets_store);
+    }
 
     Ok(result)
+}
+
+#[tauri::command]
+fn check_import_has_credentials(json: String) -> Result<bool, String> {
+    let value: serde_json::Value = serde_json::from_str(&json)
+        .map_err(|e| format!("Invalid JSON: {}", e))?;
+    if let Some(groups) = value
+        .get("config")
+        .and_then(|c| c.get("server_groups"))
+        .and_then(|g| g.as_object())
+    {
+        for (_, group) in groups {
+            if group.get("auth_token").map_or(false, |v| v.is_object())
+                || group.get("alpn_token").map_or(false, |v| v.is_object())
+            {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
 }
 
 // ============================================================================
@@ -571,6 +677,7 @@ pub fn run() {
             // Export/Import commands
             export_configs,
             import_configs,
+            check_import_has_credentials,
             // Process commands
             list_instances,
             get_instance,
