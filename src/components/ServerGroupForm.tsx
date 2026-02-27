@@ -7,7 +7,8 @@ import './ServerGroupForm.css';
 // Base64URL character set (A-Z, a-z, 0-9, -, _)
 const BASE64URL_REGEX = /^[A-Za-z0-9_-]+$/;
 
-function crc16(data: Uint8Array): number {
+/** CRC16-CCITT-FALSE: poly=0x1021, init=0xFFFF, no reflection, no XOR-out */
+function crc16CcittFalse(data: Uint8Array): number {
     let crc = 0xFFFF;
     for (const byte of data) {
         crc ^= byte << 8;
@@ -23,9 +24,7 @@ function crc16(data: Uint8Array): number {
 }
 
 function base64UrlDecode(s: string): Uint8Array | null {
-    // Convert Base64URL to standard Base64
     let base64 = s.replace(/-/g, '+').replace(/_/g, '/');
-    // Add padding if needed
     while (base64.length % 4 !== 0) {
         base64 += '=';
     }
@@ -41,33 +40,20 @@ function base64UrlDecode(s: string): Uint8Array | null {
     }
 }
 
-function validateBase64UrlWithCrc16(token: string, expectedLength: number, label: string): string | null {
-    if (!token) {
-        return `${label} is required`;
-    }
-
-    if (token.length !== expectedLength) {
-        return `${label} must be exactly ${expectedLength} characters (got ${token.length})`;
-    }
-
-    if (!BASE64URL_REGEX.test(token)) {
+/** Validate a Base64URL-encoded payload with trailing 2-byte CRC16 big-endian checksum */
+function validateBase64UrlCrc16(base64Payload: string, label: string): string | null {
+    if (!BASE64URL_REGEX.test(base64Payload)) {
         return `${label} contains invalid characters (only A-Z, a-z, 0-9, -, _ allowed)`;
     }
 
-    // Decode and verify CRC16 checksum
-    const decoded = base64UrlDecode(token);
-    if (!decoded) {
+    const decoded = base64UrlDecode(base64Payload);
+    if (!decoded || decoded.length < 3) {
         return `${label} is not valid Base64URL`;
     }
 
-    // The last 2 bytes are the CRC16 checksum of the preceding bytes
-    if (decoded.length < 3) {
-        return `${label} is too short after decoding`;
-    }
-
-    const payload = decoded.slice(0, decoded.length - 2);
+    const randomBytes = decoded.slice(0, decoded.length - 2);
     const storedCrc = (decoded[decoded.length - 2] << 8) | decoded[decoded.length - 1];
-    const computedCrc = crc16(payload);
+    const computedCrc = crc16CcittFalse(randomBytes);
 
     if (storedCrc !== computedCrc) {
         return `Invalid ${label.toLowerCase()} checksum`;
@@ -76,12 +62,29 @@ function validateBase64UrlWithCrc16(token: string, expectedLength: number, label
     return null;
 }
 
+/** Auth token: 'i' prefix + 46-char Base64URL(32 random bytes + 2-byte CRC16 BE) = 47 chars */
 function validateAuthToken(token: string): string | null {
-    return validateBase64UrlWithCrc16(token, 47, 'Auth token');
+    if (!token) {
+        return 'Auth token is required';
+    }
+    if (token.length !== 47) {
+        return `Auth token must be exactly 47 characters (got ${token.length})`;
+    }
+    if (token[0] !== 'i') {
+        return "Auth token must start with 'i'";
+    }
+    return validateBase64UrlCrc16(token.slice(1), 'Auth token');
 }
 
+/** ALPN token: 14-char Base64URL(8 random bytes + 2-byte CRC16 BE), no prefix */
 function validateAlpnToken(token: string): string | null {
-    return validateBase64UrlWithCrc16(token, 14, 'ALPN token');
+    if (!token) {
+        return 'ALPN token is required';
+    }
+    if (token.length !== 14) {
+        return `ALPN token must be exactly 14 characters (got ${token.length})`;
+    }
+    return validateBase64UrlCrc16(token, 'ALPN token');
 }
 
 interface ServerGroupFormProps {
