@@ -51,7 +51,7 @@ pub struct IrohConfig {
     pub transport: Option<TransportConfig>,
 }
 
-/// Full tunnel-rs client configuration (matching client.toml format)
+/// Full tunnel-rs client configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TunnelClientConfig {
     pub role: String,
@@ -80,9 +80,9 @@ impl TunnelClientConfig {
         }
     }
 
-    /// Convert to TOML string for writing config file
-    pub fn to_toml(&self) -> Result<String, toml::ser::Error> {
-        toml::to_string_pretty(self)
+    /// Convert to JSON string for piping to tunnel-rs via stdin
+    pub fn to_json(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string(self)
     }
 }
 
@@ -554,17 +554,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_config_to_toml() {
+    fn test_config_to_json() {
         let mut config = TunnelClientConfig::new("test123".to_string());
         config.iroh.request_source = Some("tcp://127.0.0.1:22".to_string());
         config.iroh.target = Some("127.0.0.1:2222".to_string());
         config.iroh.auth_token = Some("XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX1234".to_string());
         config.iroh.alpn_token = Some("XXXXXXXXXX1234".to_string());
 
-        let toml = config.to_toml().unwrap();
-        assert!(toml.contains("role = \"client\""));
-        assert!(toml.contains("mode = \"iroh\""));
-        assert!(toml.contains("server_node_id = \"test123\""));
+        let json = config.to_json().unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["role"], "client");
+        assert_eq!(parsed["mode"], "iroh");
+        assert_eq!(parsed["iroh"]["server_node_id"], "test123");
+        assert_eq!(parsed["iroh"]["request_source"], "tcp://127.0.0.1:22");
+        assert_eq!(parsed["iroh"]["target"], "127.0.0.1:2222");
     }
 
     #[test]

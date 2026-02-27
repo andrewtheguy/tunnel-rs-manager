@@ -44,7 +44,6 @@ pub struct TunnelInstance {
     pub status: TunnelStatus,
     pub child: Option<ChildProcess>,
     pub logs: VecDeque<LogEntry>,
-    pub temp_config_path: Option<std::path::PathBuf>,
 }
 
 impl TunnelInstance {
@@ -56,7 +55,6 @@ impl TunnelInstance {
             status: TunnelStatus::Stopped,
             child: None,
             logs: VecDeque::new(),
-            temp_config_path: None,
         }
     }
 
@@ -238,14 +236,10 @@ impl ProcessManager {
             // Write lock released here
         };
 
-        // Write temp config file
-        let temp_dir = std::env::temp_dir();
-        let config_path = temp_dir.join(format!("tunnel-rs-{}.toml", forwarding_id));
-
-        let toml_content = match config.to_toml() {
+        // Serialize config to JSON for piping via stdin
+        let json_config = match config.to_json() {
             Ok(content) => content,
             Err(e) => {
-                // Clean up: set error status, remove from instances
                 {
                     let mut guard = instance.lock().await;
                     guard.status = TunnelStatus::Error;
@@ -257,38 +251,19 @@ impl ProcessManager {
             }
         };
 
-        if let Err(e) = tokio::fs::write(&config_path, &toml_content).await {
-            // Clean up: set error status, remove from instances
-            {
-                let mut guard = instance.lock().await;
-                guard.status = TunnelStatus::Error;
-                guard.add_log(format!("Failed to write temp config: {}", e), true);
-            }
-            let mut instances = self.instances.write().await;
-            instances.remove(&forwarding_id);
-            return Err(format!("Failed to write temp config: {}", e));
-        }
-
-        {
-            let mut guard = instance.lock().await;
-            guard.temp_config_path = Some(config_path.clone());
-        }
-
         // Check if we should use custom binary or sidecar
         let custom_path = self.custom_binary_path.read().await.clone();
 
         if let Some(binary_path) = custom_path {
-            // Use custom binary path with tokio::process::Command
-            self.start_with_custom_binary(&instance, forwarding_id, &binary_path, &config_path)
+            self.start_with_custom_binary(&instance, forwarding_id, &binary_path, &json_config)
                 .await
         } else {
-            // Use bundled sidecar
-            self.start_with_sidecar(&instance, forwarding_id, &config_path)
+            self.start_with_sidecar(&instance, forwarding_id, &json_config)
                 .await
         }
     }
 
-    /// Clean up a failed instance: set error status, log message, remove temp config, remove from map
+    /// Clean up a failed instance: set error status, log message, remove from map
     async fn cleanup_failed_instance(
         &self,
         instance: &Arc<Mutex<TunnelInstance>>,
@@ -299,12 +274,6 @@ impl ProcessManager {
             let mut guard = instance.lock().await;
             guard.status = TunnelStatus::Error;
             guard.add_log(error_msg.to_string(), true);
-            if let Some(ref path) = guard.temp_config_path {
-                if let Err(del_err) = std::fs::remove_file(path) {
-                    guard.add_log(format!("Failed to delete temp config: {}", del_err), true);
-                }
-            }
-            guard.temp_config_path = None;
         }
         let mut instances = self.instances.write().await;
         instances.remove(&forwarding_id);
@@ -316,7 +285,7 @@ impl ProcessManager {
         instance: &Arc<Mutex<TunnelInstance>>,
         forwarding_id: Uuid,
         binary_path: &str,
-        config_path: &std::path::Path,
+        json_config: &str,
     ) -> Result<(), String> {
         // Verify binary exists (async)
         match tokio::fs::try_exists(binary_path).await {
@@ -337,9 +306,8 @@ impl ProcessManager {
         }
 
         let child = tokio::process::Command::new(binary_path)
-            .arg("client")
-            .arg("-c")
-            .arg(config_path)
+            .args(["client", "--config-stdin"])
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true)
@@ -354,6 +322,19 @@ impl ProcessManager {
             }
         };
 
+        // Pipe JSON config via stdin, then close stdin
+        {
+            use tokio::io::AsyncWriteExt;
+            let mut stdin = child.stdin.take().expect("stdin was piped");
+            if let Err(e) = stdin.write_all(json_config.as_bytes()).await {
+                let _ = child.kill().await;
+                let error_msg = format!("Failed to write config to stdin: {}", e);
+                self.cleanup_failed_instance(instance, forwarding_id, &error_msg).await;
+                return Err(error_msg);
+            }
+            // stdin is dropped here, closing the pipe
+        }
+
         // Take stdout/stderr for log capture
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
@@ -363,11 +344,7 @@ impl ProcessManager {
             guard.child = Some(ChildProcess::Tokio(child));
             guard.status = TunnelStatus::Running;
             guard.add_log(
-                format!(
-                    "Started with custom binary: {} (config: {})",
-                    binary_path,
-                    config_path.display()
-                ),
+                format!("Started with custom binary: {}", binary_path),
                 false,
             );
         }
@@ -417,11 +394,6 @@ impl ProcessManager {
                                 !status.success(),
                             );
                             guard.child = None;
-
-                            // Clean up temp config
-                            if let Some(ref path) = guard.temp_config_path {
-                                let _ = std::fs::remove_file(path);
-                            }
                             break;
                         }
                         Ok(None) => {
@@ -447,7 +419,7 @@ impl ProcessManager {
         &self,
         instance: &Arc<Mutex<TunnelInstance>>,
         forwarding_id: Uuid,
-        config_path: &std::path::Path,
+        json_config: &str,
     ) -> Result<(), String> {
         let app_handle = match self.app_handle.read().await.clone() {
             Some(handle) => handle,
@@ -459,7 +431,7 @@ impl ProcessManager {
         };
 
         let sidecar_command = match app_handle.shell().sidecar("tunnel-rs") {
-            Ok(cmd) => cmd.args(["client", "-c", &config_path.to_string_lossy()]),
+            Ok(cmd) => cmd.args(["client", "--config-stdin"]),
             Err(e) => {
                 let error_msg = format!("Failed to create sidecar command: {}", e);
                 self.cleanup_failed_instance(instance, forwarding_id, &error_msg).await;
@@ -467,7 +439,7 @@ impl ProcessManager {
             }
         };
 
-        let (mut rx, child) = match sidecar_command.spawn() {
+        let (mut rx, mut child) = match sidecar_command.spawn() {
             Ok(result) => result,
             Err(e) => {
                 let error_msg = format!("Failed to spawn sidecar: {}", e);
@@ -476,17 +448,19 @@ impl ProcessManager {
             }
         };
 
+        // Pipe JSON config via stdin
+        if let Err(e) = child.write(json_config.as_bytes()) {
+            let _ = child.kill();
+            let error_msg = format!("Failed to write config to sidecar stdin: {}", e);
+            self.cleanup_failed_instance(instance, forwarding_id, &error_msg).await;
+            return Err(error_msg);
+        }
+
         {
             let mut guard = instance.lock().await;
             guard.child = Some(ChildProcess::Sidecar(child));
             guard.status = TunnelStatus::Running;
-            guard.add_log(
-                format!(
-                    "Started with bundled sidecar (config: {})",
-                    config_path.display()
-                ),
-                false,
-            );
+            guard.add_log("Started with bundled sidecar".to_string(), false);
         }
 
         // Spawn log reader for sidecar (uses event-based output)
@@ -520,11 +494,6 @@ impl ProcessManager {
                         let is_error = payload.code != Some(0);
                         guard.add_log(exit_msg, is_error);
                         guard.child = None;
-
-                        // Clean up temp config
-                        if let Some(ref path) = guard.temp_config_path {
-                            let _ = std::fs::remove_file(path);
-                        }
                         break;
                     }
                     CommandEvent::Error(err) => {
@@ -585,12 +554,6 @@ impl ProcessManager {
 
             guard.status = TunnelStatus::Stopped;
 
-            // Clean up temp config
-            if let Some(ref path) = guard.temp_config_path {
-                let _ = std::fs::remove_file(path);
-                guard.temp_config_path = None;
-            }
-
             Ok(())
         } else {
             Err("Tunnel not found".to_string())
@@ -646,13 +609,6 @@ impl ProcessManager {
             for instance in instances.values() {
                 let mut guard = instance.lock().await;
                 guard.status = TunnelStatus::Stopped;
-
-                if let Some(ref path) = guard.temp_config_path {
-                    if let Err(e) = std::fs::remove_file(path) {
-                        tracing::warn!("Failed to remove temp config {}: {}", path.display(), e);
-                    }
-                }
-                guard.temp_config_path = None;
             }
         }
     }
