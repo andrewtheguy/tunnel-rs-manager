@@ -152,81 +152,105 @@ pub struct ImportResult {
 // Secrets Store
 // ============================================================================
 
+/// All secrets stored in a single keyring entry as JSON.
+/// This avoids multiple macOS Keychain prompts (one per entry).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct SecretsBlob {
+    /// Key: "auth::{server_node_id}" or "alpn::{server_node_id}", Value: token
+    tokens: HashMap<String, String>,
+}
+
 /// Secrets store backed by the OS keyring (macOS Keychain, Windows Credential Manager, etc.)
-pub struct SecretsStore;
+/// Uses a single keyring entry with a JSON blob to avoid repeated Keychain prompts.
+pub struct SecretsStore {
+    cache: std::sync::Mutex<Option<SecretsBlob>>,
+}
 
 const KEYRING_SERVICE: &str = "tunnel-rs-manager";
+const KEYRING_ACCOUNT: &str = "secrets";
 
 impl SecretsStore {
     pub fn new() -> Self {
-        Self
+        Self {
+            cache: std::sync::Mutex::new(None),
+        }
     }
 
-    fn entry(account: &str) -> Result<Entry, String> {
-        Entry::new(KEYRING_SERVICE, account)
+    fn entry() -> Result<Entry, String> {
+        Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT)
             .map_err(|e| format!("Failed to create keyring entry: {}", e))
     }
 
+    fn load_blob(&self) -> SecretsBlob {
+        let mut cache = self.cache.lock().unwrap();
+        if let Some(ref blob) = *cache {
+            return blob.clone();
+        }
+        let blob = Self::read_from_keyring();
+        *cache = Some(blob.clone());
+        blob
+    }
+
+    fn read_from_keyring() -> SecretsBlob {
+        let entry = match Self::entry() {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::warn!("Failed to create keyring entry: {}", e);
+                return SecretsBlob::default();
+            }
+        };
+        match entry.get_password() {
+            Ok(json) => serde_json::from_str(&json).unwrap_or_default(),
+            Err(keyring::Error::NoEntry) => SecretsBlob::default(),
+            Err(e) => {
+                tracing::warn!("Failed to read secrets from keyring: {}", e);
+                SecretsBlob::default()
+            }
+        }
+    }
+
+    fn save_blob(&self, blob: &SecretsBlob) -> Result<(), String> {
+        let json = serde_json::to_string(blob)
+            .map_err(|e| format!("Failed to serialize secrets: {}", e))?;
+        Self::entry()?
+            .set_password(&json)
+            .map_err(|e| format!("Failed to store secrets in keyring: {}", e))?;
+        *self.cache.lock().unwrap() = Some(blob.clone());
+        Ok(())
+    }
+
     pub fn set_token(&self, server_node_id: &str, auth_token: &str) -> Result<(), String> {
-        Self::entry(&format!("auth::{}", server_node_id))?
-            .set_password(auth_token)
-            .map_err(|e| format!("Failed to store auth token in keyring: {}", e))
+        let mut blob = self.load_blob();
+        blob.tokens.insert(format!("auth::{}", server_node_id), auth_token.to_string());
+        self.save_blob(&blob)
     }
 
     pub fn get_token(&self, server_node_id: &str) -> Option<String> {
-        let account = format!("auth::{}", server_node_id);
-        let entry = match Entry::new(KEYRING_SERVICE, &account) {
-            Ok(e) => e,
-            Err(e) => {
-                tracing::warn!("Failed to create keyring entry for {}: {}", account, e);
-                return None;
-            }
-        };
-        match entry.get_password() {
-            Ok(password) => Some(password),
-            Err(keyring::Error::NoEntry) => None,
-            Err(e) => {
-                tracing::warn!("Failed to get auth token from keyring for {}: {}", account, e);
-                None
-            }
-        }
+        let blob = self.load_blob();
+        blob.tokens.get(&format!("auth::{}", server_node_id)).cloned()
     }
 
     pub fn remove_token(&self, server_node_id: &str) -> Result<(), String> {
-        Self::entry(&format!("auth::{}", server_node_id))?
-            .delete_credential()
-            .map_err(|e| format!("Failed to remove auth token from keyring: {}", e))
+        let mut blob = self.load_blob();
+        blob.tokens.remove(&format!("auth::{}", server_node_id));
+        self.save_blob(&blob)
     }
 
     pub fn set_alpn_token(&self, server_node_id: &str, alpn_token: &str) -> Result<(), String> {
-        Self::entry(&format!("alpn::{}", server_node_id))?
-            .set_password(alpn_token)
-            .map_err(|e| format!("Failed to store ALPN token in keyring: {}", e))
+        let mut blob = self.load_blob();
+        blob.tokens.insert(format!("alpn::{}", server_node_id), alpn_token.to_string());
+        self.save_blob(&blob)
     }
 
     pub fn get_alpn_token(&self, server_node_id: &str) -> Option<String> {
-        let account = format!("alpn::{}", server_node_id);
-        let entry = match Entry::new(KEYRING_SERVICE, &account) {
-            Ok(e) => e,
-            Err(e) => {
-                tracing::warn!("Failed to create keyring entry for {}: {}", account, e);
-                return None;
-            }
-        };
-        match entry.get_password() {
-            Ok(password) => Some(password),
-            Err(keyring::Error::NoEntry) => None,
-            Err(e) => {
-                tracing::warn!("Failed to get ALPN token from keyring for {}: {}", account, e);
-                None
-            }
-        }
+        let blob = self.load_blob();
+        blob.tokens.get(&format!("alpn::{}", server_node_id)).cloned()
     }
 
     pub fn remove_alpn_token(&self, server_node_id: &str) -> Result<(), String> {
-        Self::entry(&format!("alpn::{}", server_node_id))?
-            .delete_credential()
-            .map_err(|e| format!("Failed to remove ALPN token from keyring: {}", e))
+        let mut blob = self.load_blob();
+        blob.tokens.remove(&format!("alpn::{}", server_node_id));
+        self.save_blob(&blob)
     }
 }
 
