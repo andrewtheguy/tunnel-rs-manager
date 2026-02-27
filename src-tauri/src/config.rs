@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
+use keyring::Entry;
 use uuid::Uuid;
 
 /// Get current Unix timestamp in seconds
@@ -91,11 +92,11 @@ pub struct ServerGroup {
     pub id: Uuid,
     pub name: String,
     pub server_node_id: String,
-    /// Auth token is stored in secrets.json, not configs.json.
+    /// Auth token is stored in the OS keyring, not configs.json.
     /// Stripped in save() and export(); restored via restore_secrets().
     #[serde(default)]
     pub auth_token: Option<String>,
-    /// ALPN token is stored in secrets.json, not configs.json.
+    /// ALPN token is stored in the OS keyring, not configs.json.
     /// Stripped in save() and export(); restored via restore_secrets().
     #[serde(default)]
     pub alpn_token: Option<String>,
@@ -151,77 +152,57 @@ pub struct ImportResult {
 // Secrets Store
 // ============================================================================
 
-/// Secrets store for auth tokens and ALPN tokens (server_node_id -> token)
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct SecretsStore {
-    pub auth_tokens: HashMap<String, String>,
-    #[serde(default)]
-    pub alpn_tokens: HashMap<String, String>,
-}
+/// Secrets store backed by the OS keyring (macOS Keychain, Windows Credential Manager, etc.)
+pub struct SecretsStore;
+
+const KEYRING_SERVICE: &str = "tunnel-rs-manager";
 
 impl SecretsStore {
-    /// Get the secrets file path
-    fn secrets_path() -> Result<PathBuf, String> {
-        Ok(app_data_dir()?.join("secrets.json"))
+    pub fn new() -> Self {
+        Self
     }
 
-    /// Load secrets from disk
-    pub fn load() -> Result<Self, String> {
-        let path = Self::secrets_path()?;
-        if !path.exists() {
-            return Ok(Self::default());
-        }
-        let content = fs::read_to_string(&path)
-            .map_err(|e| format!("Failed to read secrets: {}", e))?;
-        serde_json::from_str(&content)
-            .map_err(|e| format!("Failed to parse secrets: {}", e))
+    fn entry(account: &str) -> Result<Entry, String> {
+        Entry::new(KEYRING_SERVICE, account)
+            .map_err(|e| format!("Failed to create keyring entry: {}", e))
     }
 
-    /// Save secrets to disk
-    pub fn save(&self) -> Result<(), String> {
-        let path = Self::secrets_path()?;
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| format!("Failed to create secrets directory: {}", e))?;
-        }
-        let content = serde_json::to_string_pretty(self)
-            .map_err(|e| format!("Failed to serialize secrets: {}", e))?;
-        fs::write(&path, content)
-            .map_err(|e| format!("Failed to write secrets: {}", e))
+    pub fn set_token(&self, server_node_id: &str, auth_token: &str) -> Result<(), String> {
+        Self::entry(&format!("auth::{}", server_node_id))?
+            .set_password(auth_token)
+            .map_err(|e| format!("Failed to store auth token in keyring: {}", e))
     }
 
-    /// Set auth token for a server_node_id
-    pub fn set_token(&mut self, server_node_id: &str, auth_token: &str) -> Result<(), String> {
-        self.auth_tokens.insert(server_node_id.to_string(), auth_token.to_string());
-        self.save()
+    pub fn get_token(&self, server_node_id: &str) -> Option<String> {
+        Self::entry(&format!("auth::{}", server_node_id))
+            .ok()?
+            .get_password()
+            .ok()
     }
 
-    /// Get auth token for a server_node_id
-    pub fn get_token(&self, server_node_id: &str) -> Option<&String> {
-        self.auth_tokens.get(server_node_id)
+    pub fn remove_token(&self, server_node_id: &str) -> Result<(), String> {
+        Self::entry(&format!("auth::{}", server_node_id))?
+            .delete_credential()
+            .map_err(|e| format!("Failed to remove auth token from keyring: {}", e))
     }
 
-    /// Remove auth token for a server_node_id
-    pub fn remove_token(&mut self, server_node_id: &str) -> Result<(), String> {
-        self.auth_tokens.remove(server_node_id);
-        self.save()
+    pub fn set_alpn_token(&self, server_node_id: &str, alpn_token: &str) -> Result<(), String> {
+        Self::entry(&format!("alpn::{}", server_node_id))?
+            .set_password(alpn_token)
+            .map_err(|e| format!("Failed to store ALPN token in keyring: {}", e))
     }
 
-    /// Set ALPN token for a server_node_id
-    pub fn set_alpn_token(&mut self, server_node_id: &str, alpn_token: &str) -> Result<(), String> {
-        self.alpn_tokens.insert(server_node_id.to_string(), alpn_token.to_string());
-        self.save()
+    pub fn get_alpn_token(&self, server_node_id: &str) -> Option<String> {
+        Self::entry(&format!("alpn::{}", server_node_id))
+            .ok()?
+            .get_password()
+            .ok()
     }
 
-    /// Get ALPN token for a server_node_id
-    pub fn get_alpn_token(&self, server_node_id: &str) -> Option<&String> {
-        self.alpn_tokens.get(server_node_id)
-    }
-
-    /// Remove ALPN token for a server_node_id
-    pub fn remove_alpn_token(&mut self, server_node_id: &str) -> Result<(), String> {
-        self.alpn_tokens.remove(server_node_id);
-        self.save()
+    pub fn remove_alpn_token(&self, server_node_id: &str) -> Result<(), String> {
+        Self::entry(&format!("alpn::{}", server_node_id))?
+            .delete_credential()
+            .map_err(|e| format!("Failed to remove ALPN token from keyring: {}", e))
     }
 }
 
@@ -299,14 +280,14 @@ impl ConfigStore {
             .map_err(|e| format!("Failed to parse config store: {}", e))
     }
 
-    /// Save config store to disk (auth_tokens are stripped to keep them in secrets.json only)
+    /// Save config store to disk (auth_tokens are stripped; they're stored in the OS keyring)
     pub fn save(&self) -> Result<(), String> {
         let path = Self::store_path()?;
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
                 .map_err(|e| format!("Failed to create config directory: {}", e))?;
         }
-        // Create a copy with secrets cleared (they're stored in secrets.json)
+        // Create a copy with secrets cleared (they're stored in the OS keyring)
         let mut store_to_save = self.clone();
         for group in store_to_save.server_groups.values_mut() {
             group.auth_token = None;
@@ -319,11 +300,11 @@ impl ConfigStore {
     }
 
     /// Restore secrets (auth tokens and ALPN tokens) from SecretsStore after loading
-    /// This populates the auth_token and alpn_token fields for each server group from secrets.json
+    /// This populates the auth_token and alpn_token fields for each server group from the OS keyring
     pub fn restore_secrets(&mut self, secrets: &SecretsStore) {
         for group in self.server_groups.values_mut() {
-            group.auth_token = secrets.get_token(&group.server_node_id).cloned();
-            group.alpn_token = secrets.get_alpn_token(&group.server_node_id).cloned();
+            group.auth_token = secrets.get_token(&group.server_node_id);
+            group.alpn_token = secrets.get_alpn_token(&group.server_node_id);
         }
     }
 
@@ -456,7 +437,7 @@ impl ConfigStore {
     // Export/Import
     // ============================================================================
 
-    /// Export all configs (auth_tokens are stripped to keep them in secrets.json only)
+    /// Export all configs (auth_tokens are stripped; they're stored in the OS keyring)
     pub fn export(&self) -> ExportData {
         // Create a copy with secrets cleared (same as save())
         let mut config_to_export = self.clone();

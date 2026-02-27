@@ -25,7 +25,7 @@ static SHUTDOWN_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 /// Application state shared across commands
 pub struct AppState {
     config_store: Mutex<ConfigStore>,
-    secrets_store: Mutex<SecretsStore>,
+    secrets_store: SecretsStore,
     app_settings: Mutex<AppSettings>,
     process_manager: Arc<ProcessManager>,
     config_load_error: Option<String>,
@@ -42,15 +42,9 @@ impl AppState {
             }
         };
 
-        let secrets_store = match SecretsStore::load() {
-            Ok(store) => store,
-            Err(e) => {
-                tracing::error!("Failed to load secrets store: {}. Using default.", e);
-                SecretsStore::default()
-            }
-        };
+        let secrets_store = SecretsStore::new();
 
-        // Restore auth tokens from secrets store
+        // Restore auth tokens from secrets store (OS keyring)
         config_store.restore_secrets(&secrets_store);
 
         let app_settings = match AppSettings::load() {
@@ -63,7 +57,7 @@ impl AppState {
 
         Self {
             config_store: Mutex::new(config_store),
-            secrets_store: Mutex::new(secrets_store),
+            secrets_store,
             app_settings: Mutex::new(app_settings),
             process_manager: Arc::new(ProcessManager::new()),
             config_load_error,
@@ -77,20 +71,16 @@ impl AppState {
 
 #[tauri::command]
 async fn list_server_groups(state: State<'_, AppState>) -> Result<Vec<ServerGroup>, String> {
-    // Lock order: config_store first, then secrets_store (consistent with import_configs)
     let mut store = state.config_store.lock().await;
-    let secrets = state.secrets_store.lock().await;
-    store.restore_secrets(&secrets);
+    store.restore_secrets(&state.secrets_store);
     Ok(store.list_server_groups())
 }
 
 #[tauri::command]
 async fn get_server_group(state: State<'_, AppState>, id: String) -> Result<ServerGroup, String> {
     let uuid = Uuid::parse_str(&id).map_err(|e| format!("Invalid UUID: {}", e))?;
-    // Lock order: config_store first, then secrets_store (consistent with import_configs)
     let mut store = state.config_store.lock().await;
-    let secrets = state.secrets_store.lock().await;
-    store.restore_secrets(&secrets);
+    store.restore_secrets(&state.secrets_store);
     store
         .get_server_group(uuid)
         .cloned()
@@ -136,11 +126,8 @@ async fn create_server_group(
     }
 
     // Save tokens to secrets store (if this fails, user can re-edit to add tokens)
-    {
-        let mut secrets = state.secrets_store.lock().await;
-        secrets.set_token(&server_node_id, &auth_token)?;
-        secrets.set_alpn_token(&server_node_id, &alpn_token)?;
-    }
+    state.secrets_store.set_token(&server_node_id, &auth_token)?;
+    state.secrets_store.set_alpn_token(&server_node_id, &alpn_token)?;
 
     Ok(group)
 }
@@ -195,14 +182,11 @@ async fn update_server_group(
     }
 
     // Update secrets store: set the new tokens first, then clean up old if node id changed
-    {
-        let mut secrets = state.secrets_store.lock().await;
-        secrets.set_token(&server_node_id, &auth_token)?;
-        secrets.set_alpn_token(&server_node_id, &alpn_token)?;
-        if old_server_node_id != server_node_id {
-            let _ = secrets.remove_token(&old_server_node_id);
-            let _ = secrets.remove_alpn_token(&old_server_node_id);
-        }
+    state.secrets_store.set_token(&server_node_id, &auth_token)?;
+    state.secrets_store.set_alpn_token(&server_node_id, &alpn_token)?;
+    if old_server_node_id != server_node_id {
+        let _ = state.secrets_store.remove_token(&old_server_node_id);
+        let _ = state.secrets_store.remove_alpn_token(&old_server_node_id);
     }
 
     Ok(group)
@@ -228,9 +212,8 @@ async fn delete_server_group(state: State<'_, AppState>, id: String) -> Result<(
 
     // Clean up auth token and ALPN token from secrets store
     if let Some(node_id) = server_node_id {
-        let mut secrets = state.secrets_store.lock().await;
-        let _ = secrets.remove_token(&node_id);
-        let _ = secrets.remove_alpn_token(&node_id);
+        let _ = state.secrets_store.remove_token(&node_id);
+        let _ = state.secrets_store.remove_alpn_token(&node_id);
     }
 
     Ok(())
@@ -372,7 +355,6 @@ async fn export_configs(
         crypto::validate_passphrase(pass)?;
     }
     let store = state.config_store.lock().await;
-    let secrets = state.secrets_store.lock().await;
     let export_data = store.export();
 
     // Serialize to JSON Value so we can inject encrypted tokens per server group
@@ -392,13 +374,13 @@ async fn export_configs(
                     .unwrap_or("")
                     .to_string();
 
-                if let Some(auth) = secrets.get_token(&node_id) {
-                    let encrypted = crypto::encrypt_token(auth, pass)?;
+                if let Some(auth) = state.secrets_store.get_token(&node_id) {
+                    let encrypted = crypto::encrypt_token(&auth, pass)?;
                     group["auth_token"] = serde_json::to_value(&encrypted)
                         .map_err(|e| format!("Failed to serialize encrypted token: {}", e))?;
                 }
-                if let Some(alpn) = secrets.get_alpn_token(&node_id) {
-                    let encrypted = crypto::encrypt_token(alpn, pass)?;
+                if let Some(alpn) = state.secrets_store.get_alpn_token(&node_id) {
+                    let encrypted = crypto::encrypt_token(&alpn, pass)?;
                     group["alpn_token"] = serde_json::to_value(&encrypted)
                         .map_err(|e| format!("Failed to serialize encrypted token: {}", e))?;
                 }
@@ -470,19 +452,18 @@ async fn import_configs(
     let mut store = state.config_store.lock().await;
     let result = store.import(export_data);
 
-    // Write decrypted tokens into SecretsStore
-    let mut secrets_store = state.secrets_store.lock().await;
+    // Write decrypted tokens into SecretsStore (OS keyring)
     for (node_id, (auth, alpn)) in decrypted_tokens {
         if let Some(a) = auth {
-            secrets_store.set_token(&node_id, &a)?;
+            state.secrets_store.set_token(&node_id, &a)?;
         }
         if let Some(a) = alpn {
-            secrets_store.set_alpn_token(&node_id, &a)?;
+            state.secrets_store.set_alpn_token(&node_id, &a)?;
         }
     }
 
     // Rehydrate in-memory auth tokens from secrets store after import
-    store.restore_secrets(&secrets_store);
+    store.restore_secrets(&state.secrets_store);
 
     Ok(result)
 }
