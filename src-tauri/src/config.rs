@@ -181,14 +181,13 @@ impl SecretsStore {
             .map_err(|e| format!("Failed to create keyring entry: {}", e))
     }
 
-    fn load_blob(&self) -> SecretsBlob {
-        let mut cache = self.cache.lock().unwrap();
-        if let Some(ref blob) = *cache {
-            return blob.clone();
+    /// Ensure cache is populated, returning a mutable reference to the blob.
+    /// Caller must already hold the mutex guard.
+    fn ensure_loaded(cache: &mut Option<SecretsBlob>) -> &mut SecretsBlob {
+        if cache.is_none() {
+            *cache = Some(Self::read_from_keyring());
         }
-        let blob = Self::read_from_keyring();
-        *cache = Some(blob.clone());
-        blob
+        cache.as_mut().unwrap()
     }
 
     fn read_from_keyring() -> SecretsBlob {
@@ -209,48 +208,57 @@ impl SecretsStore {
         }
     }
 
-    fn save_blob(&self, blob: &SecretsBlob) -> Result<(), String> {
+    fn persist_blob(blob: &SecretsBlob) -> Result<(), String> {
         let json = serde_json::to_string(blob)
             .map_err(|e| format!("Failed to serialize secrets: {}", e))?;
         Self::entry()?
             .set_password(&json)
             .map_err(|e| format!("Failed to store secrets in keyring: {}", e))?;
-        *self.cache.lock().unwrap() = Some(blob.clone());
         Ok(())
     }
 
+    /// Mutate the blob under a single lock and persist to keyring.
+    fn mutate(&self, f: impl FnOnce(&mut SecretsBlob)) -> Result<(), String> {
+        let mut cache = self.cache.lock().unwrap();
+        let blob = Self::ensure_loaded(&mut cache);
+        f(blob);
+        Self::persist_blob(blob)
+    }
+
     pub fn set_token(&self, server_node_id: &str, auth_token: &str) -> Result<(), String> {
-        let mut blob = self.load_blob();
-        blob.tokens.insert(format!("auth::{}", server_node_id), auth_token.to_string());
-        self.save_blob(&blob)
+        self.mutate(|blob| {
+            blob.tokens.insert(format!("auth::{}", server_node_id), auth_token.to_string());
+        })
     }
 
     pub fn get_token(&self, server_node_id: &str) -> Option<String> {
-        let blob = self.load_blob();
+        let mut cache = self.cache.lock().unwrap();
+        let blob = Self::ensure_loaded(&mut cache);
         blob.tokens.get(&format!("auth::{}", server_node_id)).cloned()
     }
 
     pub fn remove_token(&self, server_node_id: &str) -> Result<(), String> {
-        let mut blob = self.load_blob();
-        blob.tokens.remove(&format!("auth::{}", server_node_id));
-        self.save_blob(&blob)
+        self.mutate(|blob| {
+            blob.tokens.remove(&format!("auth::{}", server_node_id));
+        })
     }
 
     pub fn set_alpn_token(&self, server_node_id: &str, alpn_token: &str) -> Result<(), String> {
-        let mut blob = self.load_blob();
-        blob.tokens.insert(format!("alpn::{}", server_node_id), alpn_token.to_string());
-        self.save_blob(&blob)
+        self.mutate(|blob| {
+            blob.tokens.insert(format!("alpn::{}", server_node_id), alpn_token.to_string());
+        })
     }
 
     pub fn get_alpn_token(&self, server_node_id: &str) -> Option<String> {
-        let blob = self.load_blob();
+        let mut cache = self.cache.lock().unwrap();
+        let blob = Self::ensure_loaded(&mut cache);
         blob.tokens.get(&format!("alpn::{}", server_node_id)).cloned()
     }
 
     pub fn remove_alpn_token(&self, server_node_id: &str) -> Result<(), String> {
-        let mut blob = self.load_blob();
-        blob.tokens.remove(&format!("alpn::{}", server_node_id));
-        self.save_blob(&blob)
+        self.mutate(|blob| {
+            blob.tokens.remove(&format!("alpn::{}", server_node_id));
+        })
     }
 }
 

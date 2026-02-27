@@ -322,20 +322,20 @@ impl ProcessManager {
             }
         };
 
-        // Pipe JSON config via stdin, then close stdin
+        // Pipe JSON config via stdin (don't close — tunnel-rs reads a complete JSON value
+        // via serde_json::Deserializer::from_reader without needing EOF)
         {
             use tokio::io::AsyncWriteExt;
-            let mut stdin = child.stdin.take().expect("stdin was piped");
+            let stdin = child.stdin.as_mut().expect("stdin was piped");
             if let Err(e) = stdin.write_all(json_config.as_bytes()).await {
                 let _ = child.kill().await;
                 let error_msg = format!("Failed to write config to stdin: {}", e);
                 self.cleanup_failed_instance(instance, forwarding_id, &error_msg).await;
                 return Err(error_msg);
             }
-            // stdin is dropped here, closing the pipe
         }
 
-        // Take stdout/stderr for log capture
+        // Take stdout/stderr for log capture (stdin remains open on the child)
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
 
