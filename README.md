@@ -2,6 +2,9 @@
 
 A cross-platform desktop application to manage [tunnel-rs](https://github.com/andrewtheguy/tunnel-rs) client instances. Built with Tauri, React, and TypeScript.
 
+> [!WARNING]
+> ** Work In Progress — No Backward Compatibility:** This is a personal project for my own use. No backward compatibility or migration path is provided between versions. Configurations, settings, or stored data may change without notice.
+
 ## Features
 
 - Persistent configuration storage
@@ -19,7 +22,7 @@ This application includes a bundled `tunnel-rs` binary, so no separate installat
 
 | Component | Version | Source |
 |-----------|---------|--------|
-| tunnel-rs | **0.2.0** | [GitHub Release](https://github.com/andrewtheguy/tunnel-rs/releases/tag/0.2.0) |
+| tunnel-rs | **0.2.2** | [GitHub Release](https://github.com/andrewtheguy/tunnel-rs/releases/tag/0.2.2) |
 
 ### Supported Platforms
 
