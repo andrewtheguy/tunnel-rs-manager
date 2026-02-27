@@ -91,7 +91,7 @@ export function PassphraseDialog({ mode, onSubmit, onSkip, onCancel, loading = f
                                 </li>
                                 {passphrase.length > 0 && confirm.length > 0 && passphrase !== confirm && (
                                     <li className="passphrase-hint-unmet">
-                                        {'\u2717'} Passphrases match
+                                        {'\u2717'} Passphrases do not match
                                     </li>
                                 )}
                             </ul>
