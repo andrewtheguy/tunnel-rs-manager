@@ -503,7 +503,6 @@ impl ConfigStore {
                 group.created_at = now;
                 group.updated_at = now;
             }
-            // auth_token is already None from deserialization (due to #[serde(skip)])
 
             self.server_groups.insert(id, group);
             result.groups_imported += 1;
