@@ -174,10 +174,22 @@ impl SecretsStore {
     }
 
     pub fn get_token(&self, server_node_id: &str) -> Option<String> {
-        Self::entry(&format!("auth::{}", server_node_id))
-            .ok()?
-            .get_password()
-            .ok()
+        let account = format!("auth::{}", server_node_id);
+        let entry = match Entry::new(KEYRING_SERVICE, &account) {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::warn!("Failed to create keyring entry for {}: {}", account, e);
+                return None;
+            }
+        };
+        match entry.get_password() {
+            Ok(password) => Some(password),
+            Err(keyring::Error::NoEntry) => None,
+            Err(e) => {
+                tracing::warn!("Failed to get auth token from keyring for {}: {}", account, e);
+                None
+            }
+        }
     }
 
     pub fn remove_token(&self, server_node_id: &str) -> Result<(), String> {
@@ -193,10 +205,22 @@ impl SecretsStore {
     }
 
     pub fn get_alpn_token(&self, server_node_id: &str) -> Option<String> {
-        Self::entry(&format!("alpn::{}", server_node_id))
-            .ok()?
-            .get_password()
-            .ok()
+        let account = format!("alpn::{}", server_node_id);
+        let entry = match Entry::new(KEYRING_SERVICE, &account) {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::warn!("Failed to create keyring entry for {}: {}", account, e);
+                return None;
+            }
+        };
+        match entry.get_password() {
+            Ok(password) => Some(password),
+            Err(keyring::Error::NoEntry) => None,
+            Err(e) => {
+                tracing::warn!("Failed to get ALPN token from keyring for {}: {}", account, e);
+                None
+            }
+        }
     }
 
     pub fn remove_alpn_token(&self, server_node_id: &str) -> Result<(), String> {

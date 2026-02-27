@@ -243,7 +243,7 @@ function App() {
     setShowExportPassphrase(true);
   }, []);
 
-  const handleExportSubmit = useCallback(async (passphrase: string) => {
+  const performExport = useCallback(async (passphrase: string | null) => {
     setExportLoading(true);
     setExportError(undefined);
     try {
@@ -264,26 +264,8 @@ function App() {
     }
   }, []);
 
-  const handleExportSkip = useCallback(async () => {
-    setExportLoading(true);
-    setExportError(undefined);
-    try {
-      const json = await invoke<string>('export_configs', { passphrase: null });
-      setShowExportPassphrase(false);
-
-      const filePath = await save({
-        defaultPath: 'tunnel-rs-configs.json',
-        filters: [{ name: 'JSON', extensions: ['json'] }],
-      });
-      if (filePath) {
-        await writeTextFile(filePath, json);
-      }
-    } catch (e) {
-      setExportError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setExportLoading(false);
-    }
-  }, []);
+  const handleExportSubmit = useCallback((passphrase: string) => performExport(passphrase), [performExport]);
+  const handleExportSkip = useCallback(() => performExport(null), [performExport]);
 
   const handleImportClick = useCallback(() => {
     importInputRef.current?.click();

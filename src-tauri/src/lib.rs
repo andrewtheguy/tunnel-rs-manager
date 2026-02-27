@@ -452,18 +452,21 @@ async fn import_configs(
     let mut store = state.config_store.lock().await;
     let result = store.import(export_data);
 
-    // Write decrypted tokens into SecretsStore (OS keyring)
-    for (node_id, (auth, alpn)) in decrypted_tokens {
-        if let Some(a) = auth {
-            state.secrets_store.set_token(&node_id, &a)?;
+    // Only persist tokens if the import succeeded (avoids orphan secrets on
+    // version mismatch or save failure)
+    if result.success {
+        for (node_id, (auth, alpn)) in decrypted_tokens {
+            if let Some(a) = auth {
+                state.secrets_store.set_token(&node_id, &a)?;
+            }
+            if let Some(a) = alpn {
+                state.secrets_store.set_alpn_token(&node_id, &a)?;
+            }
         }
-        if let Some(a) = alpn {
-            state.secrets_store.set_alpn_token(&node_id, &a)?;
-        }
-    }
 
-    // Rehydrate in-memory auth tokens from secrets store after import
-    store.restore_secrets(&state.secrets_store);
+        // Rehydrate in-memory auth tokens from secrets store after import
+        store.restore_secrets(&state.secrets_store);
+    }
 
     Ok(result)
 }
