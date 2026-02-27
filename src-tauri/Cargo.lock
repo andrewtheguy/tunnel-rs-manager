@@ -4485,7 +4485,7 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
 name = "tunnel-rs-manager"
-version = "0.0.33"
+version = "0.0.34"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -4502,7 +4502,6 @@ dependencies = [
  "tauri-plugin-opener",
  "tauri-plugin-shell",
  "tokio",
- "toml 0.8.2",
  "tracing",
  "uuid",
 ]

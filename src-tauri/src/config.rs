@@ -51,7 +51,7 @@ pub struct IrohConfig {
     pub transport: Option<TransportConfig>,
 }
 
-/// Full tunnel-rs client configuration (matching client.toml format)
+/// Full tunnel-rs client configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TunnelClientConfig {
     pub role: String,
@@ -80,9 +80,9 @@ impl TunnelClientConfig {
         }
     }
 
-    /// Convert to TOML string for writing config file
-    pub fn to_toml(&self) -> Result<String, toml::ser::Error> {
-        toml::to_string_pretty(self)
+    /// Convert to JSON string for piping to tunnel-rs via stdin
+    pub fn to_json(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string(self)
     }
 }
 
@@ -152,81 +152,113 @@ pub struct ImportResult {
 // Secrets Store
 // ============================================================================
 
+/// All secrets stored in a single keyring entry as JSON.
+/// This avoids multiple macOS Keychain prompts (one per entry).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct SecretsBlob {
+    /// Key: "auth::{server_node_id}" or "alpn::{server_node_id}", Value: token
+    tokens: HashMap<String, String>,
+}
+
 /// Secrets store backed by the OS keyring (macOS Keychain, Windows Credential Manager, etc.)
-pub struct SecretsStore;
+/// Uses a single keyring entry with a JSON blob to avoid repeated Keychain prompts.
+pub struct SecretsStore {
+    cache: std::sync::Mutex<Option<SecretsBlob>>,
+}
 
 const KEYRING_SERVICE: &str = "tunnel-rs-manager";
+const KEYRING_ACCOUNT: &str = "secrets";
 
 impl SecretsStore {
     pub fn new() -> Self {
-        Self
+        Self {
+            cache: std::sync::Mutex::new(None),
+        }
     }
 
-    fn entry(account: &str) -> Result<Entry, String> {
-        Entry::new(KEYRING_SERVICE, account)
+    fn entry() -> Result<Entry, String> {
+        Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT)
             .map_err(|e| format!("Failed to create keyring entry: {}", e))
     }
 
+    /// Ensure cache is populated, returning a mutable reference to the blob.
+    /// Caller must already hold the mutex guard.
+    fn ensure_loaded(cache: &mut Option<SecretsBlob>) -> &mut SecretsBlob {
+        if cache.is_none() {
+            *cache = Some(Self::read_from_keyring());
+        }
+        cache.as_mut().unwrap()
+    }
+
+    fn read_from_keyring() -> SecretsBlob {
+        let entry = match Self::entry() {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::warn!("Failed to create keyring entry: {}", e);
+                return SecretsBlob::default();
+            }
+        };
+        match entry.get_password() {
+            Ok(json) => serde_json::from_str(&json).unwrap_or_default(),
+            Err(keyring::Error::NoEntry) => SecretsBlob::default(),
+            Err(e) => {
+                tracing::warn!("Failed to read secrets from keyring: {}", e);
+                SecretsBlob::default()
+            }
+        }
+    }
+
+    fn persist_blob(blob: &SecretsBlob) -> Result<(), String> {
+        let json = serde_json::to_string(blob)
+            .map_err(|e| format!("Failed to serialize secrets: {}", e))?;
+        Self::entry()?
+            .set_password(&json)
+            .map_err(|e| format!("Failed to store secrets in keyring: {}", e))?;
+        Ok(())
+    }
+
+    /// Mutate the blob under a single lock and persist to keyring.
+    fn mutate(&self, f: impl FnOnce(&mut SecretsBlob)) -> Result<(), String> {
+        let mut cache = self.cache.lock().unwrap();
+        let blob = Self::ensure_loaded(&mut cache);
+        f(blob);
+        Self::persist_blob(blob)
+    }
+
     pub fn set_token(&self, server_node_id: &str, auth_token: &str) -> Result<(), String> {
-        Self::entry(&format!("auth::{}", server_node_id))?
-            .set_password(auth_token)
-            .map_err(|e| format!("Failed to store auth token in keyring: {}", e))
+        self.mutate(|blob| {
+            blob.tokens.insert(format!("auth::{}", server_node_id), auth_token.to_string());
+        })
     }
 
     pub fn get_token(&self, server_node_id: &str) -> Option<String> {
-        let account = format!("auth::{}", server_node_id);
-        let entry = match Entry::new(KEYRING_SERVICE, &account) {
-            Ok(e) => e,
-            Err(e) => {
-                tracing::warn!("Failed to create keyring entry for {}: {}", account, e);
-                return None;
-            }
-        };
-        match entry.get_password() {
-            Ok(password) => Some(password),
-            Err(keyring::Error::NoEntry) => None,
-            Err(e) => {
-                tracing::warn!("Failed to get auth token from keyring for {}: {}", account, e);
-                None
-            }
-        }
+        let mut cache = self.cache.lock().unwrap();
+        let blob = Self::ensure_loaded(&mut cache);
+        blob.tokens.get(&format!("auth::{}", server_node_id)).cloned()
     }
 
     pub fn remove_token(&self, server_node_id: &str) -> Result<(), String> {
-        Self::entry(&format!("auth::{}", server_node_id))?
-            .delete_credential()
-            .map_err(|e| format!("Failed to remove auth token from keyring: {}", e))
+        self.mutate(|blob| {
+            blob.tokens.remove(&format!("auth::{}", server_node_id));
+        })
     }
 
     pub fn set_alpn_token(&self, server_node_id: &str, alpn_token: &str) -> Result<(), String> {
-        Self::entry(&format!("alpn::{}", server_node_id))?
-            .set_password(alpn_token)
-            .map_err(|e| format!("Failed to store ALPN token in keyring: {}", e))
+        self.mutate(|blob| {
+            blob.tokens.insert(format!("alpn::{}", server_node_id), alpn_token.to_string());
+        })
     }
 
     pub fn get_alpn_token(&self, server_node_id: &str) -> Option<String> {
-        let account = format!("alpn::{}", server_node_id);
-        let entry = match Entry::new(KEYRING_SERVICE, &account) {
-            Ok(e) => e,
-            Err(e) => {
-                tracing::warn!("Failed to create keyring entry for {}: {}", account, e);
-                return None;
-            }
-        };
-        match entry.get_password() {
-            Ok(password) => Some(password),
-            Err(keyring::Error::NoEntry) => None,
-            Err(e) => {
-                tracing::warn!("Failed to get ALPN token from keyring for {}: {}", account, e);
-                None
-            }
-        }
+        let mut cache = self.cache.lock().unwrap();
+        let blob = Self::ensure_loaded(&mut cache);
+        blob.tokens.get(&format!("alpn::{}", server_node_id)).cloned()
     }
 
     pub fn remove_alpn_token(&self, server_node_id: &str) -> Result<(), String> {
-        Self::entry(&format!("alpn::{}", server_node_id))?
-            .delete_credential()
-            .map_err(|e| format!("Failed to remove ALPN token from keyring: {}", e))
+        self.mutate(|blob| {
+            blob.tokens.remove(&format!("alpn::{}", server_node_id));
+        })
     }
 }
 
@@ -554,17 +586,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_config_to_toml() {
+    fn test_config_to_json() {
         let mut config = TunnelClientConfig::new("test123".to_string());
         config.iroh.request_source = Some("tcp://127.0.0.1:22".to_string());
         config.iroh.target = Some("127.0.0.1:2222".to_string());
         config.iroh.auth_token = Some("XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX1234".to_string());
         config.iroh.alpn_token = Some("XXXXXXXXXX1234".to_string());
 
-        let toml = config.to_toml().unwrap();
-        assert!(toml.contains("role = \"client\""));
-        assert!(toml.contains("mode = \"iroh\""));
-        assert!(toml.contains("server_node_id = \"test123\""));
+        let json = config.to_json().unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["role"], "client");
+        assert_eq!(parsed["mode"], "iroh");
+        assert_eq!(parsed["iroh"]["server_node_id"], "test123");
+        assert_eq!(parsed["iroh"]["request_source"], "tcp://127.0.0.1:22");
+        assert_eq!(parsed["iroh"]["target"], "127.0.0.1:2222");
     }
 
     #[test]
