@@ -4,69 +4,84 @@ import { useState, useEffect, useMemo, useRef } from 'react';
 import type { ServerGroupFormData } from '../types';
 import './ServerGroupForm.css';
 
-// Valid characters for auth token body: A-Za-z0-9 and -_.
-const TOKEN_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.';
+// Base64URL character set (A-Z, a-z, 0-9, -, _)
+const BASE64URL_REGEX = /^[A-Za-z0-9_-]+$/;
 
-function charToIndex(c: string): number {
-    const idx = TOKEN_ALPHABET.indexOf(c);
-    return idx;
-}
-
-function luhnModNChecksum(body: string): string {
-    const n = TOKEN_ALPHABET.length; // 65
-    let factor = 2;
-    let sum = 0;
-
-    // Process characters from right to left
-    for (let i = body.length - 1; i >= 0; i--) {
-        const codePoint = charToIndex(body[i]);
-        if (codePoint === -1) {
-            return ''; // Invalid character
+function crc16(data: Uint8Array): number {
+    let crc = 0xFFFF;
+    for (const byte of data) {
+        crc ^= byte << 8;
+        for (let i = 0; i < 8; i++) {
+            if (crc & 0x8000) {
+                crc = ((crc << 1) ^ 0x1021) & 0xFFFF;
+            } else {
+                crc = (crc << 1) & 0xFFFF;
+            }
         }
-        let addend = factor * codePoint;
-        factor = factor === 2 ? 1 : 2;
-        addend = Math.floor(addend / n) + (addend % n);
-        sum += addend;
     }
-
-    const remainder = sum % n;
-    const checkCodePoint = (n - remainder) % n;
-    return TOKEN_ALPHABET[checkCodePoint];
+    return crc;
 }
 
-function validateAuthToken(token: string): string | null {
-    // Auth token is required
+function base64UrlDecode(s: string): Uint8Array | null {
+    // Convert Base64URL to standard Base64
+    let base64 = s.replace(/-/g, '+').replace(/_/g, '/');
+    // Add padding if needed
+    while (base64.length % 4 !== 0) {
+        base64 += '=';
+    }
+    try {
+        const binary = atob(base64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) {
+            bytes[i] = binary.charCodeAt(i);
+        }
+        return bytes;
+    } catch {
+        return null;
+    }
+}
+
+function validateBase64UrlWithCrc16(token: string, expectedLength: number, label: string): string | null {
     if (!token) {
-        return 'Auth token is required';
+        return `${label} is required`;
     }
 
-    // Must be exactly 18 characters
-    if (token.length !== 18) {
-        return `Token must be exactly 18 characters (got ${token.length})`;
+    if (token.length !== expectedLength) {
+        return `${label} must be exactly ${expectedLength} characters (got ${token.length})`;
     }
 
-    // Must start with 'i'
-    if (token[0] !== 'i') {
-        return "Token must start with 'i'";
+    if (!BASE64URL_REGEX.test(token)) {
+        return `${label} contains invalid characters (only A-Z, a-z, 0-9, -, _ allowed)`;
     }
 
-    // Body is characters 1-16 (indices 1..17)
-    const body = token.slice(1, 17);
-
-    // Validate body characters
-    for (const c of body) {
-        if (charToIndex(c) === -1) {
-            return `Invalid character '${c}' in token body`;
-        }
+    // Decode and verify CRC16 checksum
+    const decoded = base64UrlDecode(token);
+    if (!decoded) {
+        return `${label} is not valid Base64URL`;
     }
 
-    // Validate checksum (last character)
-    const expectedChecksum = luhnModNChecksum(body);
-    if (token[17] !== expectedChecksum) {
-        return 'Invalid token checksum';
+    // The last 2 bytes are the CRC16 checksum of the preceding bytes
+    if (decoded.length < 3) {
+        return `${label} is too short after decoding`;
+    }
+
+    const payload = decoded.slice(0, decoded.length - 2);
+    const storedCrc = (decoded[decoded.length - 2] << 8) | decoded[decoded.length - 1];
+    const computedCrc = crc16(payload);
+
+    if (storedCrc !== computedCrc) {
+        return `Invalid ${label.toLowerCase()} checksum`;
     }
 
     return null;
+}
+
+function validateAuthToken(token: string): string | null {
+    return validateBase64UrlWithCrc16(token, 47, 'Auth token');
+}
+
+function validateAlpnToken(token: string): string | null {
+    return validateBase64UrlWithCrc16(token, 14, 'ALPN token');
 }
 
 interface ServerGroupFormProps {
@@ -81,16 +96,23 @@ export function ServerGroupForm({ initial, onSubmit, onCancel, isEditing = false
         name: '',
         server_node_id: '',
         auth_token: '',
+        alpn_token: '',
         relay_urls: '',
     });
     const [submitting, setSubmitting] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const appliedInitialRef = useRef(false);
     const normalizedAuthToken = form.auth_token.trim();
+    const normalizedAlpnToken = form.alpn_token.trim();
 
     const authTokenError = useMemo(
         () => validateAuthToken(normalizedAuthToken),
         [normalizedAuthToken]
+    );
+
+    const alpnTokenError = useMemo(
+        () => validateAlpnToken(normalizedAlpnToken),
+        [normalizedAlpnToken]
     );
 
     useEffect(() => {
@@ -115,6 +137,7 @@ export function ServerGroupForm({ initial, onSubmit, onCancel, isEditing = false
             name: form.name.trim(),
             server_node_id: form.server_node_id.trim(),
             auth_token: form.auth_token.trim(),
+            alpn_token: form.alpn_token.trim(),
             relay_urls: form.relay_urls.trim(),
         };
 
@@ -129,6 +152,10 @@ export function ServerGroupForm({ initial, onSubmit, onCancel, isEditing = false
         }
         if (authTokenError) {
             setError(authTokenError);
+            return;
+        }
+        if (alpnTokenError) {
+            setError(alpnTokenError);
             return;
         }
 
@@ -188,7 +215,7 @@ export function ServerGroupForm({ initial, onSubmit, onCancel, isEditing = false
                         type="password"
                         value={form.auth_token}
                         onChange={handleChange('auth_token')}
-                        placeholder="iXXXXXXXXXXXXXXXXX"
+                        placeholder="XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX1234"
                         className={authTokenError && normalizedAuthToken ? 'input-error' : ''}
                         autoCapitalize="none"
                         autoComplete="off"
@@ -198,7 +225,28 @@ export function ServerGroupForm({ initial, onSubmit, onCancel, isEditing = false
                     {authTokenError && normalizedAuthToken ? (
                         <span className="field-error">{authTokenError}</span>
                     ) : (
-                        <span className="help-text">18-character token from server admin</span>
+                        <span className="help-text">47-character token from server admin</span>
+                    )}
+                </div>
+
+                <div className="form-group">
+                    <label htmlFor="alpn_token">ALPN Token *</label>
+                    <input
+                        id="alpn_token"
+                        type="password"
+                        value={form.alpn_token}
+                        onChange={handleChange('alpn_token')}
+                        placeholder="XXXXXXXXXXXXXX"
+                        className={alpnTokenError && normalizedAlpnToken ? 'input-error' : ''}
+                        autoCapitalize="none"
+                        autoComplete="off"
+                        autoCorrect="off"
+                        spellCheck={false}
+                    />
+                    {alpnTokenError && normalizedAlpnToken ? (
+                        <span className="field-error">{alpnTokenError}</span>
+                    ) : (
+                        <span className="help-text">14-character ALPN token from server admin</span>
                     )}
                 </div>
 
