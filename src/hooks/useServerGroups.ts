@@ -38,7 +38,6 @@ export function useServerGroups() {
 
     const refresh = useCallback(async () => {
         try {
-            setLoading(true);
             setError(null);
             const result = await invoke<ServerGroup[]>('list_server_groups');
             if (!mountedRef.current) return;

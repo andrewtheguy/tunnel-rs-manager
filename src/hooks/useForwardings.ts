@@ -51,7 +51,6 @@ export function useForwardings() {
     const refresh = useCallback(async () => {
         try {
             if (mountedRef.current) {
-                setLoading(true);
                 setError(null);
             }
             const result = await invoke<Forwarding[]>('list_forwardings');
