@@ -45,6 +45,8 @@ pub struct IrohConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auth_token_file: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub alpn_token: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub transport: Option<TransportConfig>,
 }
 
@@ -71,6 +73,7 @@ impl TunnelClientConfig {
                 socks5_proxy: None,
                 auth_token: None,
                 auth_token_file: None,
+                alpn_token: None,
                 transport: None,
             },
         }
@@ -89,9 +92,13 @@ pub struct ServerGroup {
     pub name: String,
     pub server_node_id: String,
     /// Auth token is stored in secrets.json, not configs.json.
-    /// Stripped in save() and export(); restored via restore_auth_tokens().
+    /// Stripped in save() and export(); restored via restore_secrets().
     #[serde(default)]
     pub auth_token: Option<String>,
+    /// ALPN token is stored in secrets.json, not configs.json.
+    /// Stripped in save() and export(); restored via restore_secrets().
+    #[serde(default)]
+    pub alpn_token: Option<String>,
     #[serde(default)]
     pub relay_urls: Vec<String>,
     #[serde(default)]
@@ -144,10 +151,12 @@ pub struct ImportResult {
 // Secrets Store
 // ============================================================================
 
-/// Secrets store for auth tokens (server_node_id -> auth_token)
+/// Secrets store for auth tokens and ALPN tokens (server_node_id -> token)
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SecretsStore {
     pub auth_tokens: HashMap<String, String>,
+    #[serde(default)]
+    pub alpn_tokens: HashMap<String, String>,
 }
 
 impl SecretsStore {
@@ -195,6 +204,23 @@ impl SecretsStore {
     /// Remove auth token for a server_node_id
     pub fn remove_token(&mut self, server_node_id: &str) -> Result<(), String> {
         self.auth_tokens.remove(server_node_id);
+        self.save()
+    }
+
+    /// Set ALPN token for a server_node_id
+    pub fn set_alpn_token(&mut self, server_node_id: &str, alpn_token: &str) -> Result<(), String> {
+        self.alpn_tokens.insert(server_node_id.to_string(), alpn_token.to_string());
+        self.save()
+    }
+
+    /// Get ALPN token for a server_node_id
+    pub fn get_alpn_token(&self, server_node_id: &str) -> Option<&String> {
+        self.alpn_tokens.get(server_node_id)
+    }
+
+    /// Remove ALPN token for a server_node_id
+    pub fn remove_alpn_token(&mut self, server_node_id: &str) -> Result<(), String> {
+        self.alpn_tokens.remove(server_node_id);
         self.save()
     }
 }
@@ -280,10 +306,11 @@ impl ConfigStore {
             fs::create_dir_all(parent)
                 .map_err(|e| format!("Failed to create config directory: {}", e))?;
         }
-        // Create a copy with auth_tokens cleared (they're stored in secrets.json)
+        // Create a copy with secrets cleared (they're stored in secrets.json)
         let mut store_to_save = self.clone();
         for group in store_to_save.server_groups.values_mut() {
             group.auth_token = None;
+            group.alpn_token = None;
         }
         let content = serde_json::to_string_pretty(&store_to_save)
             .map_err(|e| format!("Failed to serialize config store: {}", e))?;
@@ -291,11 +318,12 @@ impl ConfigStore {
             .map_err(|e| format!("Failed to write config store: {}", e))
     }
 
-    /// Restore auth tokens from SecretsStore after loading
-    /// This populates the auth_token field for each server group from secrets.json
-    pub fn restore_auth_tokens(&mut self, secrets: &SecretsStore) {
+    /// Restore secrets (auth tokens and ALPN tokens) from SecretsStore after loading
+    /// This populates the auth_token and alpn_token fields for each server group from secrets.json
+    pub fn restore_secrets(&mut self, secrets: &SecretsStore) {
         for group in self.server_groups.values_mut() {
             group.auth_token = secrets.get_token(&group.server_node_id).cloned();
+            group.alpn_token = secrets.get_alpn_token(&group.server_node_id).cloned();
         }
     }
 
@@ -418,6 +446,7 @@ impl ConfigStore {
         config.iroh.request_source = forwarding.source.clone();
         config.iroh.target = forwarding.target.clone();
         config.iroh.auth_token = group.auth_token.clone();
+        config.iroh.alpn_token = group.alpn_token.clone();
         config.iroh.relay_urls = group.relay_urls.clone();
 
         Ok(config)
@@ -429,10 +458,11 @@ impl ConfigStore {
 
     /// Export all configs (auth_tokens are stripped to keep them in secrets.json only)
     pub fn export(&self) -> ExportData {
-        // Create a copy with auth_tokens cleared (same as save())
+        // Create a copy with secrets cleared (same as save())
         let mut config_to_export = self.clone();
         for group in config_to_export.server_groups.values_mut() {
             group.auth_token = None;
+            group.alpn_token = None;
         }
         ExportData {
             version: 1,
@@ -524,7 +554,8 @@ mod tests {
         let mut config = TunnelClientConfig::new("test123".to_string());
         config.iroh.request_source = Some("tcp://127.0.0.1:22".to_string());
         config.iroh.target = Some("127.0.0.1:2222".to_string());
-        config.iroh.auth_token = Some("iXXXXXXXXXXXXXXXXX".to_string());
+        config.iroh.auth_token = Some("XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX1234".to_string());
+        config.iroh.alpn_token = Some("XXXXXXXXXX1234".to_string());
 
         let toml = config.to_toml().unwrap();
         assert!(toml.contains("role = \"client\""));
@@ -542,7 +573,8 @@ mod tests {
             id: group_id,
             name: "Test Group".to_string(),
             server_node_id: "test_node_123".to_string(),
-            auth_token: Some("iXXXXXXXXXXXXXXXXX".to_string()),
+            auth_token: Some("XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX1234".to_string()),
+            alpn_token: Some("XXXXXXXXXX1234".to_string()),
             relay_urls: vec!["https://relay.example.com".to_string()],
             created_at: 0,
             updated_at: 0,
@@ -567,7 +599,8 @@ mod tests {
         assert_eq!(config.iroh.server_node_id, "test_node_123");
         assert_eq!(config.iroh.request_source, Some("tcp://127.0.0.1:22".to_string()));
         assert_eq!(config.iroh.target, Some("127.0.0.1:2222".to_string()));
-        assert_eq!(config.iroh.auth_token, Some("iXXXXXXXXXXXXXXXXX".to_string()));
+        assert_eq!(config.iroh.auth_token, Some("XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX1234".to_string()));
+        assert_eq!(config.iroh.alpn_token, Some("XXXXXXXXXX1234".to_string()));
         assert_eq!(config.iroh.relay_urls.len(), 1);
     }
 }

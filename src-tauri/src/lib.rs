@@ -48,7 +48,7 @@ impl AppState {
         };
 
         // Restore auth tokens from secrets store
-        config_store.restore_auth_tokens(&secrets_store);
+        config_store.restore_secrets(&secrets_store);
 
         let app_settings = match AppSettings::load() {
             Ok(settings) => settings,
@@ -77,7 +77,7 @@ async fn list_server_groups(state: State<'_, AppState>) -> Result<Vec<ServerGrou
     // Lock order: config_store first, then secrets_store (consistent with import_configs)
     let mut store = state.config_store.lock().await;
     let secrets = state.secrets_store.lock().await;
-    store.restore_auth_tokens(&secrets);
+    store.restore_secrets(&secrets);
     Ok(store.list_server_groups())
 }
 
@@ -87,7 +87,7 @@ async fn get_server_group(state: State<'_, AppState>, id: String) -> Result<Serv
     // Lock order: config_store first, then secrets_store (consistent with import_configs)
     let mut store = state.config_store.lock().await;
     let secrets = state.secrets_store.lock().await;
-    store.restore_auth_tokens(&secrets);
+    store.restore_secrets(&secrets);
     store
         .get_server_group(uuid)
         .cloned()
@@ -100,10 +100,14 @@ async fn create_server_group(
     name: String,
     server_node_id: String,
     auth_token: String,
+    alpn_token: String,
     relay_urls: Option<Vec<String>>,
 ) -> Result<ServerGroup, String> {
     if auth_token.is_empty() {
         return Err("Auth token is required".to_string());
+    }
+    if alpn_token.is_empty() {
+        return Err("ALPN token is required".to_string());
     }
 
     let now = std::time::SystemTime::now()
@@ -116,6 +120,7 @@ async fn create_server_group(
         name,
         server_node_id: server_node_id.clone(),
         auth_token: Some(auth_token.clone()),
+        alpn_token: Some(alpn_token.clone()),
         relay_urls: relay_urls.unwrap_or_default(),
         created_at: now,
         updated_at: now,
@@ -127,10 +132,11 @@ async fn create_server_group(
         store.upsert_server_group(group.clone())?;
     }
 
-    // Save auth token to secrets store (if this fails, user can re-edit to add token)
+    // Save tokens to secrets store (if this fails, user can re-edit to add tokens)
     {
         let mut secrets = state.secrets_store.lock().await;
         secrets.set_token(&server_node_id, &auth_token)?;
+        secrets.set_alpn_token(&server_node_id, &alpn_token)?;
     }
 
     Ok(group)
@@ -143,10 +149,14 @@ async fn update_server_group(
     name: String,
     server_node_id: String,
     auth_token: String,
+    alpn_token: String,
     relay_urls: Option<Vec<String>>,
 ) -> Result<ServerGroup, String> {
     if auth_token.is_empty() {
         return Err("Auth token is required".to_string());
+    }
+    if alpn_token.is_empty() {
+        return Err("ALPN token is required".to_string());
     }
 
     let uuid = Uuid::parse_str(&id).map_err(|e| format!("Invalid UUID: {}", e))?;
@@ -169,6 +179,7 @@ async fn update_server_group(
         name,
         server_node_id: server_node_id.clone(),
         auth_token: Some(auth_token.clone()),
+        alpn_token: Some(alpn_token.clone()),
         relay_urls: relay_urls_final,
         created_at,
         updated_at: now,
@@ -180,15 +191,14 @@ async fn update_server_group(
         store.upsert_server_group(group.clone())?;
     }
 
-    // Update secrets store: set the new token first via state.secrets_store.lock().await and
-    // secrets.set_token(&server_node_id, &auth_token); if the node id changed (old_server_node_id
-    // != server_node_id), then remove the old token with secrets.remove_token(&old_server_node_id),
-    // preserving the old token if set_token fails.
+    // Update secrets store: set the new tokens first, then clean up old if node id changed
     {
         let mut secrets = state.secrets_store.lock().await;
         secrets.set_token(&server_node_id, &auth_token)?;
+        secrets.set_alpn_token(&server_node_id, &alpn_token)?;
         if old_server_node_id != server_node_id {
             let _ = secrets.remove_token(&old_server_node_id);
+            let _ = secrets.remove_alpn_token(&old_server_node_id);
         }
     }
 
@@ -213,10 +223,11 @@ async fn delete_server_group(state: State<'_, AppState>, id: String) -> Result<(
         store.delete_server_group(uuid)?;
     }
 
-    // Clean up auth token from secrets store
+    // Clean up auth token and ALPN token from secrets store
     if let Some(node_id) = server_node_id {
         let mut secrets = state.secrets_store.lock().await;
         let _ = secrets.remove_token(&node_id);
+        let _ = secrets.remove_alpn_token(&node_id);
     }
 
     Ok(())
@@ -369,7 +380,7 @@ async fn import_configs(state: State<'_, AppState>, json: String) -> Result<Impo
 
     // Rehydrate in-memory auth tokens from secrets store after import
     let secrets_store = state.secrets_store.lock().await;
-    store.restore_auth_tokens(&secrets_store);
+    store.restore_secrets(&secrets_store);
 
     Ok(result)
 }
@@ -410,10 +421,16 @@ async fn start_tunnel(state: State<'_, AppState>, forwarding_id: String) -> Resu
             .ok_or_else(|| "Server group not found".to_string())?;
         let server_group_name = group.name.clone();
 
-        // Require auth token to start tunnel
+        // Require auth token and ALPN token to start tunnel
         if group.auth_token.is_none() {
             return Err(format!(
                 "Auth token is required. Please edit server group '{}' and add an auth token.",
+                group.name
+            ));
+        }
+        if group.alpn_token.is_none() {
+            return Err(format!(
+                "ALPN token is required. Please edit server group '{}' and add an ALPN token.",
                 group.name
             ));
         }

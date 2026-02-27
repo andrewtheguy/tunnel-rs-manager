@@ -10,6 +10,7 @@ export interface ServerGroup {
   name: string;
   server_node_id: string;
   auth_token?: string;
+  alpn_token?: string;
   relay_urls: string[];
   created_at: number;
   updated_at: number;
@@ -20,6 +21,7 @@ export interface ServerGroupFormData {
   name: string;
   server_node_id: string;
   auth_token: string;
+  alpn_token: string;
   relay_urls: string; // Comma-separated for form input
 }
 
@@ -27,6 +29,7 @@ export const emptyServerGroupForm: ServerGroupFormData = {
   name: '',
   server_node_id: '',
   auth_token: '',
+  alpn_token: '',
   relay_urls: '',
 };
 
@@ -35,6 +38,7 @@ export function serverGroupToForm(group: ServerGroup): ServerGroupFormData {
     name: group.name,
     server_node_id: group.server_node_id,
     auth_token: group.auth_token ?? '',
+    alpn_token: group.alpn_token ?? '',
     relay_urls: (group.relay_urls ?? []).join(', '),
   };
 }

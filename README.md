@@ -19,7 +19,7 @@ This application includes a bundled `tunnel-rs` binary, so no separate installat
 
 | Component | Version | Source |
 |-----------|---------|--------|
-| tunnel-rs | **0.1.81** | [GitHub Release](https://github.com/andrewtheguy/tunnel-rs/releases/tag/0.1.81) |
+| tunnel-rs | **0.2.0** | [GitHub Release](https://github.com/andrewtheguy/tunnel-rs/releases/tag/0.2.0) |
 
 ### Supported Platforms
 
@@ -80,7 +80,8 @@ bun run tauri build
 | Server Node ID | The [Iroh](https://iroh.computer/) node ID of the tunnel server. Iroh is a peer-to-peer networking library; the node ID is a unique identifier (public key) for the server, obtained from the tunnel-rs server output when it starts |
 | Source | Source address to connect to on the server side. Can be an IP or hostname resolved by the server (e.g., `tcp://127.0.0.1:22`, `tcp://internal-host:5432`) |
 | Target | Local address where the tunnel will listen for connections (e.g., `127.0.0.1:2222`) |
-| Auth Token | Optional authentication token for server verification |
+| Auth Token | Authentication token for server verification (47-character Base64URL, required) |
+| ALPN Token | ALPN token for QUIC handshake (14-character Base64URL, required) |
 | Relay URLs | Optional comma-separated list of Iroh relay server URLs for NAT traversal |
 
 ### Custom Binary Path
