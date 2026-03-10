@@ -155,10 +155,12 @@ impl TunnelClientConfig {
                     out.push_str(&format!("congestion_controller = {}\n", toml::Value::String(v.clone())));
                 }
                 if let Some(v) = transport.receive_window {
-                    out.push_str(&format!("receive_window = {}\n", toml::Value::Integer(v as i64)));
+                    let i: i64 = v.try_into().unwrap_or(i64::MAX);
+                    out.push_str(&format!("receive_window = {}\n", toml::Value::Integer(i)));
                 }
                 if let Some(v) = transport.send_window {
-                    out.push_str(&format!("send_window = {}\n", toml::Value::Integer(v as i64)));
+                    let i: i64 = v.try_into().unwrap_or(i64::MAX);
+                    out.push_str(&format!("send_window = {}\n", toml::Value::Integer(i)));
                 }
             }
         }

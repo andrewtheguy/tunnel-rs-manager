@@ -91,6 +91,7 @@ export function ForwardingItem({
                     <button
                         className="btn-icon"
                         onClick={onExportToml}
+                        disabled={loading}
                         title="Export as TOML config"
                     >
                         <ExportIcon />
