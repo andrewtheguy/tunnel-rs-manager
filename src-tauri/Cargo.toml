@@ -29,3 +29,4 @@ argon2 = "0.5"
 base64 = "0.22"
 rand = "0.8"
 keyring = { version = "3", features = ["apple-native", "windows-native", "linux-native"] }
+toml = "0.8"

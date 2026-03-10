@@ -16,6 +16,7 @@ interface ServerGroupCardProps {
     onDeleteForwarding: (id: string) => void;
     onStartForwarding: (id: string) => void;
     onStopForwarding: (id: string) => void;
+    onExportForwardingToml: (id: string) => void;
     loading?: boolean;
 }
 
@@ -30,6 +31,7 @@ export function ServerGroupCard({
     onDeleteForwarding,
     onStartForwarding,
     onStopForwarding,
+    onExportForwardingToml,
     loading = false,
 }: ServerGroupCardProps) {
     // Precompute instance lookup map for O(1) access
@@ -122,6 +124,7 @@ export function ServerGroupCard({
                                 onStop={() => onStopForwarding(forwarding.id)}
                                 onEdit={() => onEditForwarding(forwarding)}
                                 onDelete={() => onDeleteForwarding(forwarding.id)}
+                                onExportToml={() => onExportForwardingToml(forwarding.id)}
                                 loading={loading}
                             />
                         ))}
