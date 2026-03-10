@@ -492,6 +492,35 @@ fn check_import_has_credentials(json: String) -> Result<bool, String> {
 }
 
 // ============================================================================
+// Export Forwarding as TOML
+// ============================================================================
+
+#[tauri::command]
+async fn export_forwarding_toml(
+    state: State<'_, AppState>,
+    forwarding_id: String,
+) -> Result<String, String> {
+    let uuid = Uuid::parse_str(&forwarding_id).map_err(|e| format!("Invalid UUID: {}", e))?;
+
+    let mut store = state.config_store.lock().await;
+    store.restore_secrets(&state.secrets_store);
+
+    let forwarding = store
+        .get_forwarding(uuid)
+        .ok_or_else(|| "Forwarding not found".to_string())?;
+    let forwarding_name = forwarding.name.clone();
+    let group_id = forwarding.server_group_id;
+
+    let group = store
+        .get_server_group(group_id)
+        .ok_or_else(|| "Server group not found".to_string())?;
+    let group_name = group.name.clone();
+
+    let config = store.build_tunnel_config(uuid)?;
+    Ok(config.to_commented_toml(&forwarding_name, &group_name))
+}
+
+// ============================================================================
 // Process Commands
 // ============================================================================
 
@@ -678,6 +707,7 @@ pub fn run() {
             export_configs,
             import_configs,
             check_import_has_credentials,
+            export_forwarding_toml,
             // Process commands
             list_instances,
             get_instance,

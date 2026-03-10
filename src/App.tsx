@@ -213,6 +213,24 @@ function App() {
     }
   }, [stopTunnel]);
 
+  const handleExportForwardingToml = useCallback(async (id: string) => {
+    try {
+      const tomlContent = await invoke<string>('export_forwarding_toml', { forwardingId: id });
+      const forwarding = getForwarding(id);
+      const defaultName = forwarding ? `${forwarding.name}.toml` : 'forwarding.toml';
+
+      const filePath = await save({
+        defaultPath: defaultName,
+        filters: [{ name: 'TOML', extensions: ['toml'] }],
+      });
+      if (filePath) {
+        await writeTextFile(filePath, tomlContent);
+      }
+    } catch (e) {
+      alert(`Failed to export forwarding config: ${e instanceof Error ? e.message : e}`);
+    }
+  }, [getForwarding]);
+
   const handleCancel = useCallback(() => {
     setView('list');
     setEditingGroup(null);
@@ -500,6 +518,7 @@ function App() {
                     onDeleteForwarding={handleDeleteForwarding}
                     onStartForwarding={handleStartForwarding}
                     onStopForwarding={handleStopForwarding}
+                    onExportForwardingToml={handleExportForwardingToml}
                     loading={instancesLoading}
                   />
                 ))}
