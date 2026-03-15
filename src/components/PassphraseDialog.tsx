@@ -61,6 +61,9 @@ export function PassphraseDialog({ mode, onSubmit, onSkip, onCancel, loading = f
                             onChange={e => setPassphrase(e.target.value)}
                             autoFocus
                             disabled={loading}
+                            autoCapitalize="none"
+                            autoCorrect="off"
+                            spellCheck={false}
                         />
                     </div>
 
@@ -73,6 +76,9 @@ export function PassphraseDialog({ mode, onSubmit, onSkip, onCancel, loading = f
                                     value={confirm}
                                     onChange={e => setConfirm(e.target.value)}
                                     disabled={loading}
+                                    autoCapitalize="none"
+                                    autoCorrect="off"
+                                    spellCheck={false}
                                 />
                             </div>
 

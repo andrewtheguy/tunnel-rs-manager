@@ -5,12 +5,124 @@ use std::collections::{HashMap, VecDeque};
 use std::process::Stdio;
 use std::sync::Arc;
 use tauri::AppHandle;
-use tauri_plugin_shell::process::CommandChild;
+use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Child;
 use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
+
+// Exit codes from tunnel-rs (see docs/ARCHITECTURE.md)
+const EXIT_CONFIG_ERROR: i32 = 2;
+const EXIT_AUTH_FAILURE: i32 = 3;
+const EXIT_CONNECTION_FAILED: i32 = 10;
+const EXIT_CONNECTION_LOST: i32 = 11;
+
+// Reconnect policy
+const MAX_GENERAL_ERROR_RETRIES: u32 = 5;
+const INITIAL_BACKOFF_MS: u64 = 1000;
+const MAX_BACKOFF_MS: u64 = 30000;
+
+/// Reconnect decision based on exit code analysis
+enum ReconnectDecision {
+    No,
+    Immediate,
+    WithBackoff(u64),
+}
+
+fn should_reconnect(
+    exit_code: Option<i32>,
+    user_stopped: bool,
+    has_been_connected: bool,
+    reconnect_attempts: u32,
+) -> ReconnectDecision {
+    if user_stopped {
+        return ReconnectDecision::No;
+    }
+    match exit_code {
+        Some(0) | Some(EXIT_CONFIG_ERROR) | Some(EXIT_AUTH_FAILURE) => ReconnectDecision::No,
+        Some(EXIT_CONNECTION_LOST) => ReconnectDecision::Immediate,
+        Some(EXIT_CONNECTION_FAILED) => {
+            if has_been_connected {
+                ReconnectDecision::Immediate
+            } else {
+                ReconnectDecision::No
+            }
+        }
+        Some(1) => {
+            if reconnect_attempts >= MAX_GENERAL_ERROR_RETRIES {
+                ReconnectDecision::No
+            } else {
+                let backoff = INITIAL_BACKOFF_MS * 2u64.pow(reconnect_attempts);
+                ReconnectDecision::WithBackoff(backoff.min(MAX_BACKOFF_MS))
+            }
+        }
+        _ => ReconnectDecision::No, // signal termination or unknown exit code
+    }
+}
+
+/// Process exit and decide whether to reconnect. Sets status and logs accordingly.
+fn handle_process_exit(
+    instance: &mut TunnelInstance,
+    exit_code: Option<i32>,
+) -> ReconnectDecision {
+    instance.child = None;
+
+    // Exit 11 means the tunnel was connected before the connection was lost
+    if exit_code == Some(EXIT_CONNECTION_LOST) {
+        instance.has_been_connected = true;
+        instance.reconnect_attempts = 0;
+    }
+
+    let decision = should_reconnect(
+        exit_code,
+        instance.user_stopped,
+        instance.has_been_connected,
+        instance.reconnect_attempts,
+    );
+
+    let exit_msg = match exit_code {
+        Some(code) => format!("Process exited with code: {}", code),
+        None => "Process terminated by signal".to_string(),
+    };
+
+    match decision {
+        ReconnectDecision::No => {
+            if !instance.user_stopped {
+                instance.status = if exit_code == Some(0) {
+                    TunnelStatus::Stopped
+                } else {
+                    TunnelStatus::Error
+                };
+            }
+            instance.add_log(exit_msg, exit_code != Some(0));
+        }
+        ReconnectDecision::Immediate => {
+            instance.reconnect_attempts += 1;
+            instance.status = TunnelStatus::Reconnecting;
+            instance.add_log(
+                format!(
+                    "{}, reconnecting (attempt {})...",
+                    exit_msg, instance.reconnect_attempts
+                ),
+                true,
+            );
+        }
+        ReconnectDecision::WithBackoff(ms) => {
+            instance.reconnect_attempts += 1;
+            instance.status = TunnelStatus::Reconnecting;
+            instance.add_log(
+                format!(
+                    "{}, reconnecting in {}ms (attempt {})...",
+                    exit_msg, ms, instance.reconnect_attempts
+                ),
+                true,
+            );
+        }
+    }
+
+    decision
+}
 
 /// Status of a tunnel instance
 #[derive(Debug, Clone, serde::Serialize)]
@@ -19,6 +131,7 @@ pub enum TunnelStatus {
     Stopped,
     Starting,
     Running,
+    Reconnecting,
     Error,
 }
 
@@ -44,6 +157,12 @@ pub struct TunnelInstance {
     pub status: TunnelStatus,
     pub child: Option<ChildProcess>,
     pub logs: VecDeque<LogEntry>,
+    // Reconnect state
+    config_json: Option<String>,
+    has_been_connected: bool,
+    reconnect_attempts: u32,
+    user_stopped: bool,
+    custom_binary_path: Option<String>,
 }
 
 impl TunnelInstance {
@@ -55,6 +174,11 @@ impl TunnelInstance {
             status: TunnelStatus::Stopped,
             child: None,
             logs: VecDeque::new(),
+            config_json: None,
+            has_been_connected: false,
+            reconnect_attempts: 0,
+            user_stopped: false,
+            custom_binary_path: None,
         }
     }
 
@@ -64,8 +188,8 @@ impl TunnelInstance {
             .unwrap_or_default()
             .as_secs();
 
-        // Keep last 500 log entries (O(1) pop_front with VecDeque)
-        if self.logs.len() >= 500 {
+        // Keep last 2000 log entries (O(1) pop_front with VecDeque)
+        if self.logs.len() >= 2000 {
             self.logs.pop_front();
         }
 
@@ -198,7 +322,7 @@ impl ProcessManager {
 
     /// Start a tunnel with the given forwarding info and built config
     pub async fn start(
-        &self,
+        self: &Arc<Self>,
         forwarding_id: Uuid,
         forwarding_name: &str,
         server_group_name: &str,
@@ -212,7 +336,9 @@ impl ProcessManager {
             if let Some(existing) = instances.get(&forwarding_id) {
                 let guard = existing.lock().await;
                 match guard.status {
-                    TunnelStatus::Running | TunnelStatus::Starting => {
+                    TunnelStatus::Running
+                    | TunnelStatus::Starting
+                    | TunnelStatus::Reconnecting => {
                         return Err("Tunnel is already running".to_string());
                     }
                     _ => {}
@@ -251,8 +377,18 @@ impl ProcessManager {
             }
         };
 
-        // Check if we should use custom binary or sidecar
+        // Capture binary path at start time for consistent reconnects
         let custom_path = self.custom_binary_path.read().await.clone();
+
+        // Store config and reconnect state in instance
+        {
+            let mut guard = instance.lock().await;
+            guard.config_json = Some(json_config.clone());
+            guard.custom_binary_path = custom_path.clone();
+            guard.user_stopped = false;
+            guard.has_been_connected = false;
+            guard.reconnect_attempts = 0;
+        }
 
         if let Some(binary_path) = custom_path {
             self.start_with_custom_binary(&instance, forwarding_id, &binary_path, &json_config)
@@ -279,9 +415,13 @@ impl ProcessManager {
         instances.remove(&forwarding_id);
     }
 
+    // ========================================================================
+    // Custom binary (tokio process)
+    // ========================================================================
+
     /// Start tunnel using custom binary path
     async fn start_with_custom_binary(
-        &self,
+        self: &Arc<Self>,
         instance: &Arc<Mutex<TunnelInstance>>,
         forwarding_id: Uuid,
         binary_path: &str,
@@ -292,7 +432,8 @@ impl ProcessManager {
             Ok(true) => {} // Binary exists, continue
             Ok(false) => {
                 let error_msg = format!("Custom binary path '{}' does not exist", binary_path);
-                self.cleanup_failed_instance(instance, forwarding_id, &error_msg).await;
+                self.cleanup_failed_instance(instance, forwarding_id, &error_msg)
+                    .await;
                 return Err(error_msg);
             }
             Err(e) => {
@@ -300,27 +441,45 @@ impl ProcessManager {
                     "Failed to check if custom binary path '{}' exists: {}",
                     binary_path, e
                 );
-                self.cleanup_failed_instance(instance, forwarding_id, &error_msg).await;
+                self.cleanup_failed_instance(instance, forwarding_id, &error_msg)
+                    .await;
                 return Err(error_msg);
             }
         }
 
-        let child = tokio::process::Command::new(binary_path)
+        if let Err(e) = self
+            .spawn_custom_child(instance, binary_path, json_config)
+            .await
+        {
+            self.cleanup_failed_instance(instance, forwarding_id, &e)
+                .await;
+            return Err(e);
+        }
+
+        // Spawn monitor task with reconnect support
+        let pm = self.clone();
+        let instance_clone = instance.clone();
+        tokio::spawn(Self::monitor_custom_child(pm, instance_clone));
+
+        Ok(())
+    }
+
+    /// Spawn a custom binary child process, set up log readers, store child in instance.
+    /// Used for both initial start and reconnect.
+    async fn spawn_custom_child(
+        &self,
+        instance: &Arc<Mutex<TunnelInstance>>,
+        binary_path: &str,
+        json_config: &str,
+    ) -> Result<(), String> {
+        let mut child = tokio::process::Command::new(binary_path)
             .args(["client", "--config-stdin"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true)
-            .spawn();
-
-        let mut child = match child {
-            Ok(c) => c,
-            Err(e) => {
-                let error_msg = format!("Failed to spawn tunnel-rs: {}", e);
-                self.cleanup_failed_instance(instance, forwarding_id, &error_msg).await;
-                return Err(error_msg);
-            }
-        };
+            .spawn()
+            .map_err(|e| format!("Failed to spawn tunnel-rs: {}", e))?;
 
         // Pipe JSON config via stdin (don't close — tunnel-rs reads a complete JSON value
         // via serde_json::Deserializer::from_reader without needing EOF)
@@ -329,9 +488,7 @@ impl ProcessManager {
             let stdin = child.stdin.as_mut().expect("stdin was piped");
             if let Err(e) = stdin.write_all(json_config.as_bytes()).await {
                 let _ = child.kill().await;
-                let error_msg = format!("Failed to write config to stdin: {}", e);
-                self.cleanup_failed_instance(instance, forwarding_id, &error_msg).await;
-                return Err(error_msg);
+                return Err(format!("Failed to write config to stdin: {}", e));
             }
         }
 
@@ -372,88 +529,131 @@ impl ProcessManager {
             });
         }
 
-        // Spawn process monitor for tokio child
-        let instance_clone = instance.clone();
-        tokio::spawn(async move {
-            loop {
-                tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-                let mut guard = instance_clone.lock().await;
-                if let Some(ChildProcess::Tokio(ref mut child)) = guard.child {
-                    match child.try_wait() {
-                        Ok(Some(status)) => {
-                            // Preserve Stopped status if already set by stop()
-                            if !matches!(guard.status, TunnelStatus::Stopped) {
-                                guard.status = if status.success() {
-                                    TunnelStatus::Stopped
-                                } else {
-                                    TunnelStatus::Error
-                                };
-                            }
-                            guard.add_log(
-                                format!("Process exited with status: {}", status),
-                                !status.success(),
-                            );
-                            guard.child = None;
-                            break;
-                        }
-                        Ok(None) => {
-                            // Still running
-                        }
-                        Err(e) => {
-                            guard.status = TunnelStatus::Error;
-                            guard.add_log(format!("Error checking process status: {}", e), true);
-                            break;
-                        }
-                    }
-                } else {
-                    break;
-                }
-            }
-        });
-
         Ok(())
     }
 
+    /// Monitor a custom binary child process, handling exit codes and reconnect.
+    async fn monitor_custom_child(pm: Arc<Self>, instance: Arc<Mutex<TunnelInstance>>) {
+        loop {
+            // Poll for exit
+            let exit_code: Option<i32> = loop {
+                tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                let mut guard = instance.lock().await;
+                if let Some(ChildProcess::Tokio(ref mut child)) = guard.child {
+                    match child.try_wait() {
+                        Ok(Some(status)) => break status.code(),
+                        Ok(None) => {} // Still running
+                        Err(e) => {
+                            guard.add_log(
+                                format!("Error checking process status: {}", e),
+                                true,
+                            );
+                            break None;
+                        }
+                    }
+                } else {
+                    return; // No child to monitor
+                }
+            };
+
+            // Handle exit and get reconnect decision
+            let decision = {
+                let mut guard = instance.lock().await;
+                handle_process_exit(&mut guard, exit_code)
+            };
+
+            match decision {
+                ReconnectDecision::No => return,
+                ReconnectDecision::Immediate => {}
+                ReconnectDecision::WithBackoff(ms) => {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(ms)).await;
+                }
+            }
+
+            // Attempt reconnect (check user_stopped before spawning)
+            let (config, binary_path) = {
+                let guard = instance.lock().await;
+                if guard.user_stopped {
+                    return;
+                }
+                (guard.config_json.clone(), guard.custom_binary_path.clone())
+            };
+            match (config, binary_path) {
+                (Some(config), Some(binary_path)) => {
+                    if let Err(e) = pm.spawn_custom_child(&instance, &binary_path, &config).await {
+                        let mut guard = instance.lock().await;
+                        guard.status = TunnelStatus::Error;
+                        guard.add_log(format!("Reconnect failed: {}", e), true);
+                        return;
+                    }
+                    // New child spawned, continue loop to monitor it
+                }
+                _ => {
+                    let mut guard = instance.lock().await;
+                    guard.status = TunnelStatus::Error;
+                    guard.add_log("Cannot reconnect: missing configuration".to_string(), true);
+                    return;
+                }
+            }
+        }
+    }
+
+    // ========================================================================
+    // Bundled sidecar
+    // ========================================================================
+
     /// Start tunnel using bundled sidecar
     async fn start_with_sidecar(
-        &self,
+        self: &Arc<Self>,
         instance: &Arc<Mutex<TunnelInstance>>,
         forwarding_id: Uuid,
         json_config: &str,
     ) -> Result<(), String> {
-        let app_handle = match self.app_handle.read().await.clone() {
-            Some(handle) => handle,
-            None => {
-                let error_msg = "App handle not set";
-                self.cleanup_failed_instance(instance, forwarding_id, error_msg).await;
-                return Err(error_msg.to_string());
+        let rx = match self.spawn_sidecar_child(instance, json_config).await {
+            Ok(rx) => rx,
+            Err(e) => {
+                self.cleanup_failed_instance(instance, forwarding_id, &e)
+                    .await;
+                return Err(e);
             }
         };
 
-        let sidecar_command = match app_handle.shell().sidecar("tunnel-rs") {
-            Ok(cmd) => cmd.args(["client", "--config-stdin"]),
-            Err(e) => {
-                let error_msg = format!("Failed to create sidecar command: {}", e);
-                self.cleanup_failed_instance(instance, forwarding_id, &error_msg).await;
-                return Err(error_msg);
-            }
-        };
+        // Spawn monitor task with reconnect support
+        let pm = self.clone();
+        let instance_clone = instance.clone();
+        tokio::spawn(Self::monitor_sidecar_child(pm, instance_clone, rx));
 
-        let (mut rx, mut child) = match sidecar_command.spawn() {
-            Ok(result) => result,
-            Err(e) => {
-                let error_msg = format!("Failed to spawn sidecar: {}", e);
-                self.cleanup_failed_instance(instance, forwarding_id, &error_msg).await;
-                return Err(error_msg);
-            }
-        };
+        Ok(())
+    }
+
+    /// Spawn a sidecar child process, store child in instance, return event receiver.
+    /// Used for both initial start and reconnect.
+    async fn spawn_sidecar_child(
+        &self,
+        instance: &Arc<Mutex<TunnelInstance>>,
+        json_config: &str,
+    ) -> Result<tokio::sync::mpsc::Receiver<CommandEvent>, String> {
+        let app_handle = self
+            .app_handle
+            .read()
+            .await
+            .clone()
+            .ok_or_else(|| "App handle not set".to_string())?;
+
+        let sidecar_command = app_handle
+            .shell()
+            .sidecar("tunnel-rs")
+            .map_err(|e| format!("Failed to create sidecar command: {}", e))?
+            .args(["client", "--config-stdin"]);
+
+        let (rx, mut child) = sidecar_command
+            .spawn()
+            .map_err(|e| format!("Failed to spawn sidecar: {}", e))?;
 
         // Pipe JSON config via stdin
         if let Err(e) = child.write(json_config.as_bytes()) {
             let _ = child.kill();
-            let error_msg = format!("Failed to write config to sidecar stdin: {}", e);
-            self.cleanup_failed_instance(instance, forwarding_id, &error_msg).await;
-            return Err(error_msg);
+            return Err(format!("Failed to write config to sidecar stdin: {}", e));
         }
 
         {
@@ -463,58 +663,99 @@ impl ProcessManager {
             guard.add_log("Started with bundled sidecar".to_string(), false);
         }
 
-        // Spawn log reader for sidecar (uses event-based output)
-        let instance_clone = instance.clone();
-        tokio::spawn(async move {
-            use tauri_plugin_shell::process::CommandEvent;
+        Ok(rx)
+    }
 
-            while let Some(event) = rx.recv().await {
-                let mut guard = instance_clone.lock().await;
-                match event {
-                    CommandEvent::Stdout(line) => {
+    /// Monitor a sidecar child process, handling events, exit codes, and reconnect.
+    async fn monitor_sidecar_child(
+        pm: Arc<Self>,
+        instance: Arc<Mutex<TunnelInstance>>,
+        mut rx: tokio::sync::mpsc::Receiver<CommandEvent>,
+    ) {
+        loop {
+            // Process events until termination
+            let exit_code: Option<i32> = loop {
+                match rx.recv().await {
+                    Some(CommandEvent::Stdout(line)) => {
+                        let mut guard = instance.lock().await;
                         guard.add_log(String::from_utf8_lossy(&line).to_string(), false);
                     }
-                    CommandEvent::Stderr(line) => {
+                    Some(CommandEvent::Stderr(line)) => {
+                        let mut guard = instance.lock().await;
                         guard.add_log(String::from_utf8_lossy(&line).to_string(), true);
                     }
-                    CommandEvent::Terminated(payload) => {
-                        // Preserve Stopped status if already set by stop()
-                        if !matches!(guard.status, TunnelStatus::Stopped) {
-                            let success = payload.code == Some(0);
-                            guard.status = if success {
-                                TunnelStatus::Stopped
-                            } else {
-                                TunnelStatus::Error
-                            };
-                        }
-                        let exit_msg = match payload.code {
-                            Some(code) => format!("Process exited with code: {}", code),
-                            None => "Process terminated by signal".to_string(),
-                        };
-                        let is_error = payload.code != Some(0);
-                        guard.add_log(exit_msg, is_error);
-                        guard.child = None;
-                        break;
+                    Some(CommandEvent::Terminated(payload)) => {
+                        break payload.code;
                     }
-                    CommandEvent::Error(err) => {
+                    Some(CommandEvent::Error(err)) => {
+                        let mut guard = instance.lock().await;
                         guard.status = TunnelStatus::Error;
                         guard.add_log(format!("Process error: {}", err), true);
                         guard.child = None;
-                        break;
+                        return; // Fatal error, don't reconnect
                     }
+                    None => return, // Channel closed
                     _ => {}
                 }
-            }
-        });
+            };
 
-        Ok(())
+            // Handle exit and get reconnect decision
+            let decision = {
+                let mut guard = instance.lock().await;
+                handle_process_exit(&mut guard, exit_code)
+            };
+
+            match decision {
+                ReconnectDecision::No => return,
+                ReconnectDecision::Immediate => {}
+                ReconnectDecision::WithBackoff(ms) => {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(ms)).await;
+                }
+            }
+
+            // Attempt reconnect (check user_stopped before spawning)
+            let config = {
+                let guard = instance.lock().await;
+                if guard.user_stopped {
+                    return;
+                }
+                guard.config_json.clone()
+            };
+            match config {
+                Some(config) => match pm.spawn_sidecar_child(&instance, &config).await {
+                    Ok(new_rx) => {
+                        rx = new_rx;
+                        // Continue outer loop with new receiver
+                    }
+                    Err(e) => {
+                        let mut guard = instance.lock().await;
+                        guard.status = TunnelStatus::Error;
+                        guard.add_log(format!("Reconnect failed: {}", e), true);
+                        return;
+                    }
+                },
+                None => {
+                    let mut guard = instance.lock().await;
+                    guard.status = TunnelStatus::Error;
+                    guard.add_log("Cannot reconnect: missing configuration".to_string(), true);
+                    return;
+                }
+            }
+        }
     }
+
+    // ========================================================================
+    // Stop / cleanup
+    // ========================================================================
 
     /// Stop a running tunnel
     pub async fn stop(&self, forwarding_id: Uuid) -> Result<(), String> {
         let instances = self.instances.read().await;
         if let Some(instance) = instances.get(&forwarding_id) {
             let mut guard = instance.lock().await;
+
+            // Prevent reconnect
+            guard.user_stopped = true;
 
             match guard.child.take() {
                 Some(ChildProcess::Tokio(mut child)) => {
@@ -536,7 +777,10 @@ impl ProcessManager {
                             guard.add_log(format!("Error waiting for process: {}", e), true);
                         }
                         Err(_) => {
-                            guard.add_log("Timeout waiting for process to exit".to_string(), true);
+                            guard.add_log(
+                                "Timeout waiting for process to exit".to_string(),
+                                true,
+                            );
                         }
                     }
                 }
@@ -548,7 +792,8 @@ impl ProcessManager {
                     }
                 }
                 None => {
-                    // No child to kill
+                    // No child to kill (may be in reconnect backoff)
+                    guard.add_log("Tunnel stopped by user".to_string(), false);
                 }
             }
 
@@ -582,6 +827,7 @@ impl ProcessManager {
             for instance in instances.values() {
                 let mut guard = instance.lock().await;
 
+                guard.user_stopped = true; // Prevent reconnect
                 if let Some(child) = guard.child.take() {
                     to_kill.push(child);
                 }

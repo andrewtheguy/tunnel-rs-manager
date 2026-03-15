@@ -69,12 +69,12 @@ export function Sidebar({
         const groupForwardings = getForwardingsForGroup(groupId);
         return groupForwardings.filter(f => {
             const status = getInstanceStatus(f.id);
-            return status === 'running' || status === 'starting';
+            return status === 'running' || status === 'starting' || status === 'reconnecting';
         }).length;
     }, [getForwardingsForGroup, getInstanceStatus]);
 
     const totalRunning = instances.filter(
-        i => i.status === 'running' || i.status === 'starting'
+        i => i.status === 'running' || i.status === 'starting' || i.status === 'reconnecting'
     ).length;
 
     return (
@@ -149,7 +149,7 @@ export function Sidebar({
                                         <ul className="forwarding-list">
                                             {groupForwardings.map(forwarding => {
                                                 const status = getInstanceStatus(forwarding.id);
-                                                const isActive = status === 'running' || status === 'starting';
+                                                const isActive = status === 'running' || status === 'starting' || status === 'reconnecting';
                                                 const isSelected = selectedForwardingId === forwarding.id;
 
                                                 return (

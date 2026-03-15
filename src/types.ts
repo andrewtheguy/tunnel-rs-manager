@@ -83,7 +83,7 @@ export function forwardingToForm(forwarding: Forwarding): ForwardingFormData {
 // Tunnel Instance Types
 // ============================================================================
 
-export type TunnelStatus = 'stopped' | 'starting' | 'running' | 'error';
+export type TunnelStatus = 'stopped' | 'starting' | 'running' | 'reconnecting' | 'error';
 
 export interface LogEntry {
   timestamp: number;

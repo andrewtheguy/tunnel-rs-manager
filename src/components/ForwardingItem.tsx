@@ -1,10 +1,12 @@
 // Forwarding item component showing individual forwarding details and controls
 
-import { useState } from 'react';
+import { useState, useCallback, useMemo } from 'react';
 import type { Forwarding, TunnelInstance } from '../types';
 import { StatusBadge } from './StatusBadge';
 import { LogViewer } from './LogViewer';
 import './ForwardingItem.css';
+
+const LOG_PAGE_SIZE = 50;
 
 interface ForwardingItemProps {
     forwarding: Forwarding;
@@ -28,10 +30,19 @@ export function ForwardingItem({
     loading = false,
 }: ForwardingItemProps) {
     const [showLogs, setShowLogs] = useState(false);
+    const [visibleCount, setVisibleCount] = useState(LOG_PAGE_SIZE);
     const status = instance?.status || 'stopped';
-    const isRunning = status === 'running' || status === 'starting';
-    const hasLogs = !!instance && instance.logs.length > 0;
-    const recentLogs = hasLogs && instance ? instance.logs.slice(-20) : [];
+    const isRunning = status === 'running' || status === 'starting' || status === 'reconnecting';
+    const totalLogs = instance?.logs.length ?? 0;
+    const hasLogs = totalLogs > 0;
+    const visibleLogs = useMemo(
+        () => instance ? instance.logs.slice(-visibleCount) : [],
+        [instance, visibleCount, totalLogs]
+    );
+    const hasMore = totalLogs > visibleCount;
+    const handleLoadMore = useCallback(() => {
+        setVisibleCount(prev => prev + LOG_PAGE_SIZE);
+    }, []);
 
     return (
         <div className={`forwarding-item ${isRunning ? 'active' : ''}`}>
@@ -110,7 +121,7 @@ export function ForwardingItem({
 
             {showLogs && hasLogs && (
                 <div className="forwarding-logs">
-                    <LogViewer logs={recentLogs} maxHeight="150px" />
+                    <LogViewer logs={visibleLogs} maxHeight="150px" hasMore={hasMore} onLoadMore={handleLoadMore} />
                 </div>
             )}
         </div>

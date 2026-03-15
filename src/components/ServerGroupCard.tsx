@@ -42,7 +42,7 @@ export function ServerGroupCard({
     // Count running forwardings and derive boolean from it
     const runningCount = forwardings.filter(f => {
         const instance = instanceByForwardingId.get(f.id);
-        return instance && (instance.status === 'running' || instance.status === 'starting');
+        return instance && (instance.status === 'running' || instance.status === 'starting' || instance.status === 'reconnecting');
     }).length;
     const hasRunningForwarding = runningCount > 0;
 

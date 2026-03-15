@@ -62,3 +62,11 @@
 .log-viewer::-webkit-scrollbar-thumb:hover {
     background: rgba(255, 255, 255, 0.25);
 }
+
+.log-load-more {
+    text-align: center;
+    color: #6b7280;
+    font-size: 11px;
+    padding: 4px 0 8px;
+    font-style: italic;
+}
