@@ -122,6 +122,8 @@ export function ForwardingForm({ initial, serverGroupName, onSubmit, onCancel, i
                         placeholder="SSH Tunnel"
                         autoFocus
                         autoCapitalize="none"
+                        autoCorrect="off"
+                        spellCheck={false}
                     />
                 </div>
 

@@ -192,6 +192,8 @@ export function ServerGroupForm({ initial, onSubmit, onCancel, isEditing = false
                         placeholder="My Server"
                         autoFocus
                         autoCapitalize="none"
+                        autoCorrect="off"
+                        spellCheck={false}
                     />
                 </div>
 
