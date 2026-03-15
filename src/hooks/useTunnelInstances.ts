@@ -76,7 +76,7 @@ export function useTunnelInstances() {
             .map(f => f.id);
         return instances.some(
             i => groupForwardingIds.includes(i.forwarding_id) &&
-                 (i.status === 'running' || i.status === 'starting')
+                 (i.status === 'running' || i.status === 'starting' || i.status === 'reconnecting')
         );
     }, [instances]);
 

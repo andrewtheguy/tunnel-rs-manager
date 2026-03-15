@@ -44,6 +44,12 @@
   box-shadow: 0 0 12px rgba(16, 185, 129, 0.5);
 }
 
+.status-reconnecting .status-dot {
+  background: #f59e0b;
+  animation: pulse 1.5s infinite;
+  box-shadow: 0 0 12px rgba(245, 158, 11, 0.5);
+}
+
 .status-error .status-dot {
   background: #ef4444;
   box-shadow: 0 0 12px rgba(239, 68, 68, 0.5);
@@ -52,6 +58,7 @@
 .status-stopped .status-text { color: #9ca3af; }
 .status-starting .status-text { color: #fbbf24; }
 .status-running .status-text { color: #10b981; }
+.status-reconnecting .status-text { color: #f59e0b; }
 .status-error .status-text { color: #ef4444; }
 
 @keyframes pulse {

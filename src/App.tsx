@@ -158,7 +158,7 @@ function App() {
   const handleDeleteForwarding = useCallback((id: string) => {
     // Check if running
     const instance = instances.find(i => i.forwarding_id === id);
-    if (instance && (instance.status === 'running' || instance.status === 'starting')) {
+    if (instance && (instance.status === 'running' || instance.status === 'starting' || instance.status === 'reconnecting')) {
       alert('Cannot delete a running forwarding. Stop it first.');
       return;
     }
@@ -397,7 +397,7 @@ function App() {
   }, [addForwardingToGroupId, getServerGroup]);
 
   // Stats
-  const runningCount = instances.filter(i => i.status === 'running' || i.status === 'starting').length;
+  const runningCount = instances.filter(i => i.status === 'running' || i.status === 'starting' || i.status === 'reconnecting').length;
 
   return (
     <div className="app">

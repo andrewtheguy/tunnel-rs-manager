@@ -32,7 +32,7 @@ export function ForwardingItem({
     const [showLogs, setShowLogs] = useState(false);
     const [visibleCount, setVisibleCount] = useState(LOG_PAGE_SIZE);
     const status = instance?.status || 'stopped';
-    const isRunning = status === 'running' || status === 'starting';
+    const isRunning = status === 'running' || status === 'starting' || status === 'reconnecting';
     const totalLogs = instance?.logs.length ?? 0;
     const hasLogs = totalLogs > 0;
     const visibleLogs = useMemo(
