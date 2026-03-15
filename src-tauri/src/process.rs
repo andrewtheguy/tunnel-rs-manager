@@ -567,16 +567,15 @@ impl ProcessManager {
                 ReconnectDecision::Immediate => {}
                 ReconnectDecision::WithBackoff(ms) => {
                     tokio::time::sleep(tokio::time::Duration::from_millis(ms)).await;
-                    let guard = instance.lock().await;
-                    if guard.user_stopped {
-                        return;
-                    }
                 }
             }
 
-            // Attempt reconnect
+            // Attempt reconnect (check user_stopped before spawning)
             let (config, binary_path) = {
                 let guard = instance.lock().await;
+                if guard.user_stopped {
+                    return;
+                }
                 (guard.config_json.clone(), guard.custom_binary_path.clone())
             };
             match (config, binary_path) {
@@ -711,16 +710,15 @@ impl ProcessManager {
                 ReconnectDecision::Immediate => {}
                 ReconnectDecision::WithBackoff(ms) => {
                     tokio::time::sleep(tokio::time::Duration::from_millis(ms)).await;
-                    let guard = instance.lock().await;
-                    if guard.user_stopped {
-                        return;
-                    }
                 }
             }
 
-            // Attempt reconnect
+            // Attempt reconnect (check user_stopped before spawning)
             let config = {
                 let guard = instance.lock().await;
+                if guard.user_stopped {
+                    return;
+                }
                 guard.config_json.clone()
             };
             match config {
