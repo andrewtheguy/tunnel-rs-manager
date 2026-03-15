@@ -64,8 +64,8 @@ impl TunnelInstance {
             .unwrap_or_default()
             .as_secs();
 
-        // Keep last 500 log entries (O(1) pop_front with VecDeque)
-        if self.logs.len() >= 500 {
+        // Keep last 2000 log entries (O(1) pop_front with VecDeque)
+        if self.logs.len() >= 2000 {
             self.logs.pop_front();
         }
 
