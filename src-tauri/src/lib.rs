@@ -181,18 +181,16 @@ async fn update_server_group(
     let encrypted_auth = crypto::encrypt_value(&auth_token, &recipient)?;
     let encrypted_alpn = crypto::encrypt_value(&alpn_token, &recipient)?;
 
-    let (created_at, relay_urls_final) = {
-        let store = state.config_store.lock().await;
-        let existing = store
-            .get_server_group(uuid)
-            .ok_or_else(|| "Server group not found".to_string())?;
-        (existing.created_at, relay_urls.unwrap_or_default())
-    };
-
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| format!("System time error: {}", e))?
         .as_secs();
+
+    let mut store = state.config_store.lock().await;
+    let existing = store
+        .get_server_group(uuid)
+        .ok_or_else(|| "Server group not found".to_string())?;
+    let created_at = existing.created_at;
 
     let group = ServerGroup {
         id: uuid,
@@ -200,12 +198,11 @@ async fn update_server_group(
         server_node_id,
         auth_token: Some(encrypted_auth),
         alpn_token: Some(encrypted_alpn),
-        relay_urls: relay_urls_final,
+        relay_urls: relay_urls.unwrap_or_default(),
         created_at,
         updated_at: now,
     };
 
-    let mut store = state.config_store.lock().await;
     store.upsert_server_group(group.clone())?;
 
     Ok(group)

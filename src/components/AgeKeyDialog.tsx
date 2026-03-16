@@ -28,7 +28,7 @@ export function AgeKeyDialog({ mode, recipients = [], onComplete, onCancel, onGe
     }, [onCancel, loading, generating]);
 
     useEffect(() => {
-        if (recipients.length > 0 && !selectedRecipient) {
+        if (recipients.length > 0 && (!selectedRecipient || !recipients.includes(selectedRecipient))) {
             setSelectedRecipient(recipients[0]);
         }
     }, [recipients, selectedRecipient]);

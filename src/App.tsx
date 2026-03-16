@@ -342,26 +342,30 @@ function App() {
 
   // ── TOML export ──
 
+  const exportTomlToFile = useCallback(async (forwardingId: string, recipient: string) => {
+    const tomlContent = await invoke<string>('export_forwarding_toml', { forwardingId, recipient });
+    const forwarding = getForwarding(forwardingId);
+    const defaultName = forwarding ? `${forwarding.name}.toml` : 'forwarding.toml';
+    const filePath = await save({
+      defaultPath: defaultName,
+      filters: [{ name: 'TOML', extensions: ['toml'] }],
+    });
+    if (filePath) {
+      await writeTextFile(filePath, tomlContent);
+    }
+  }, [getForwarding]);
+
   const handleExportForwardingToml = useCallback(async (id: string) => {
     try {
       const action: PendingAction = { type: 'toml-export', forwardingId: id };
       const recipient = await resolveRecipientForToml(action);
       if (recipient) {
-        const tomlContent = await invoke<string>('export_forwarding_toml', { forwardingId: id, recipient });
-        const forwarding = getForwarding(id);
-        const defaultName = forwarding ? `${forwarding.name}.toml` : 'forwarding.toml';
-        const filePath = await save({
-          defaultPath: defaultName,
-          filters: [{ name: 'TOML', extensions: ['toml'] }],
-        });
-        if (filePath) {
-          await writeTextFile(filePath, tomlContent);
-        }
+        await exportTomlToFile(id, recipient);
       }
     } catch (e) {
       alert(`Failed to export forwarding config: ${e instanceof Error ? e.message : e}`);
     }
-  }, [resolveRecipientForToml, getForwarding]);
+  }, [resolveRecipientForToml, exportTomlToFile]);
 
   // ── Age key dialog completion ──
 
@@ -373,25 +377,28 @@ function App() {
 
     try {
       if (action.type === 'toml-export') {
-        const tomlContent = await invoke<string>('export_forwarding_toml', { forwardingId: action.forwardingId, recipient });
-        const forwarding = getForwarding(action.forwardingId);
-        const defaultName = forwarding ? `${forwarding.name}.toml` : 'forwarding.toml';
-        const filePath = await save({
-          defaultPath: defaultName,
-          filters: [{ name: 'TOML', extensions: ['toml'] }],
-        });
-        if (filePath) {
-          await writeTextFile(filePath, tomlContent);
-        }
+        await exportTomlToFile(action.forwardingId, recipient);
       } else if (action.type === 'create-group') {
-        await performCreateGroup(action.form);
+        try {
+          await createServerGroup(action.form);
+          setView('list');
+        } catch (e) {
+          alert(`Failed to create server group: ${e instanceof Error ? e.message : e}`);
+        }
       } else if (action.type === 'edit-group') {
-        await performEditGroup(action.form);
+        try {
+          if (!editingGroup) throw new Error('No editing group selected');
+          await updateServerGroup(editingGroup.id, action.form);
+          setView('list');
+          setEditingGroup(null);
+        } catch (e) {
+          alert(`Failed to update server group: ${e instanceof Error ? e.message : e}`);
+        }
       }
     } catch (e) {
       alert(`Operation failed: ${e instanceof Error ? e.message : e}`);
     }
-  }, [pendingAction, getForwarding, performCreateGroup, performEditGroup]);
+  }, [pendingAction, exportTomlToFile, createServerGroup, updateServerGroup, editingGroup]);
 
   // ── Scroll/selection ──
 
