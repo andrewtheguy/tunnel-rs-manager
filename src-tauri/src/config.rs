@@ -5,7 +5,6 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
-use keyring::Entry;
 use uuid::Uuid;
 
 /// Get current Unix timestamp in seconds
@@ -199,12 +198,10 @@ pub struct ServerGroup {
     pub id: Uuid,
     pub name: String,
     pub server_node_id: String,
-    /// Auth token is stored in the OS keyring, not configs.json.
-    /// Stripped in save() and export(); restored via restore_secrets().
+    /// Stored as `ageenc:...` strings in configs.json
     #[serde(default)]
     pub auth_token: Option<String>,
-    /// ALPN token is stored in the OS keyring, not configs.json.
-    /// Stripped in save() and export(); restored via restore_secrets().
+    /// Stored as `ageenc:...` strings in configs.json
     #[serde(default)]
     pub alpn_token: Option<String>,
     #[serde(default)]
@@ -235,8 +232,7 @@ pub struct Forwarding {
 // Export/Import Data Structures
 // ============================================================================
 
-/// Export data format (shareable, no secrets)
-/// The `config` field has the same structure as configs.json
+/// Export data format — same structure as configs.json with ageenc: tokens inline
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExportData {
     pub version: u32,
@@ -258,128 +254,14 @@ pub struct ImportResult {
 }
 
 // ============================================================================
-// Secrets Store
-// ============================================================================
-
-/// All secrets stored in a single keyring entry as JSON.
-/// This avoids multiple macOS Keychain prompts (one per entry).
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-struct SecretsBlob {
-    /// Key: "auth::{server_node_id}" or "alpn::{server_node_id}", Value: token
-    tokens: HashMap<String, String>,
-}
-
-/// Secrets store backed by the OS keyring (macOS Keychain, Windows Credential Manager, etc.)
-/// Uses a single keyring entry with a JSON blob to avoid repeated Keychain prompts.
-pub struct SecretsStore {
-    cache: std::sync::Mutex<Option<SecretsBlob>>,
-}
-
-const KEYRING_SERVICE: &str = "tunnel-rs-manager";
-const KEYRING_ACCOUNT: &str = "secrets";
-
-impl SecretsStore {
-    pub fn new() -> Self {
-        Self {
-            cache: std::sync::Mutex::new(None),
-        }
-    }
-
-    fn entry() -> Result<Entry, String> {
-        Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT)
-            .map_err(|e| format!("Failed to create keyring entry: {}", e))
-    }
-
-    /// Ensure cache is populated, returning a mutable reference to the blob.
-    /// Caller must already hold the mutex guard.
-    fn ensure_loaded(cache: &mut Option<SecretsBlob>) -> &mut SecretsBlob {
-        if cache.is_none() {
-            *cache = Some(Self::read_from_keyring());
-        }
-        cache.as_mut().unwrap()
-    }
-
-    fn read_from_keyring() -> SecretsBlob {
-        let entry = match Self::entry() {
-            Ok(e) => e,
-            Err(e) => {
-                tracing::warn!("Failed to create keyring entry: {}", e);
-                return SecretsBlob::default();
-            }
-        };
-        match entry.get_password() {
-            Ok(json) => serde_json::from_str(&json).unwrap_or_default(),
-            Err(keyring::Error::NoEntry) => SecretsBlob::default(),
-            Err(e) => {
-                tracing::warn!("Failed to read secrets from keyring: {}", e);
-                SecretsBlob::default()
-            }
-        }
-    }
-
-    fn persist_blob(blob: &SecretsBlob) -> Result<(), String> {
-        let json = serde_json::to_string(blob)
-            .map_err(|e| format!("Failed to serialize secrets: {}", e))?;
-        Self::entry()?
-            .set_password(&json)
-            .map_err(|e| format!("Failed to store secrets in keyring: {}", e))?;
-        Ok(())
-    }
-
-    /// Mutate the blob under a single lock and persist to keyring.
-    fn mutate(&self, f: impl FnOnce(&mut SecretsBlob)) -> Result<(), String> {
-        let mut cache = self.cache.lock().unwrap();
-        let blob = Self::ensure_loaded(&mut cache);
-        f(blob);
-        Self::persist_blob(blob)
-    }
-
-    pub fn set_token(&self, server_node_id: &str, auth_token: &str) -> Result<(), String> {
-        self.mutate(|blob| {
-            blob.tokens.insert(format!("auth::{}", server_node_id), auth_token.to_string());
-        })
-    }
-
-    pub fn get_token(&self, server_node_id: &str) -> Option<String> {
-        let mut cache = self.cache.lock().unwrap();
-        let blob = Self::ensure_loaded(&mut cache);
-        blob.tokens.get(&format!("auth::{}", server_node_id)).cloned()
-    }
-
-    pub fn remove_token(&self, server_node_id: &str) -> Result<(), String> {
-        self.mutate(|blob| {
-            blob.tokens.remove(&format!("auth::{}", server_node_id));
-        })
-    }
-
-    pub fn set_alpn_token(&self, server_node_id: &str, alpn_token: &str) -> Result<(), String> {
-        self.mutate(|blob| {
-            blob.tokens.insert(format!("alpn::{}", server_node_id), alpn_token.to_string());
-        })
-    }
-
-    pub fn get_alpn_token(&self, server_node_id: &str) -> Option<String> {
-        let mut cache = self.cache.lock().unwrap();
-        let blob = Self::ensure_loaded(&mut cache);
-        blob.tokens.get(&format!("alpn::{}", server_node_id)).cloned()
-    }
-
-    pub fn remove_alpn_token(&self, server_node_id: &str) -> Result<(), String> {
-        self.mutate(|blob| {
-            blob.tokens.remove(&format!("alpn::{}", server_node_id));
-        })
-    }
-}
-
-// ============================================================================
 // Helpers
 // ============================================================================
 
-/// Get the application data directory path
+/// Get the application data directory path: `~/.config/tunnel-rs/tunnel-rs-manager/`
 fn app_data_dir() -> Result<PathBuf, String> {
-    let data_dir = dirs::data_dir()
-        .ok_or_else(|| "Could not find data directory".to_string())?;
-    Ok(data_dir.join("tunnel-rs-manager"))
+    let home = dirs::home_dir()
+        .ok_or_else(|| "Could not find home directory".to_string())?;
+    Ok(home.join(".config/tunnel-rs/tunnel-rs-manager"))
 }
 
 /// App-wide settings (persisted)
@@ -445,32 +327,17 @@ impl ConfigStore {
             .map_err(|e| format!("Failed to parse config store: {}", e))
     }
 
-    /// Save config store to disk (auth_tokens are stripped; they're stored in the OS keyring)
+    /// Save config store to disk (tokens are stored as ageenc: strings)
     pub fn save(&self) -> Result<(), String> {
         let path = Self::store_path()?;
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
                 .map_err(|e| format!("Failed to create config directory: {}", e))?;
         }
-        // Create a copy with secrets cleared (they're stored in the OS keyring)
-        let mut store_to_save = self.clone();
-        for group in store_to_save.server_groups.values_mut() {
-            group.auth_token = None;
-            group.alpn_token = None;
-        }
-        let content = serde_json::to_string_pretty(&store_to_save)
+        let content = serde_json::to_string_pretty(self)
             .map_err(|e| format!("Failed to serialize config store: {}", e))?;
         fs::write(&path, content)
             .map_err(|e| format!("Failed to write config store: {}", e))
-    }
-
-    /// Restore secrets (auth tokens and ALPN tokens) from SecretsStore after loading
-    /// This populates the auth_token and alpn_token fields for each server group from the OS keyring
-    pub fn restore_secrets(&mut self, secrets: &SecretsStore) {
-        for group in self.server_groups.values_mut() {
-            group.auth_token = secrets.get_token(&group.server_node_id);
-            group.alpn_token = secrets.get_alpn_token(&group.server_node_id);
-        }
     }
 
     // ============================================================================
@@ -510,7 +377,6 @@ impl ConfigStore {
     /// Delete a server group by ID
     /// Returns error if the group has forwardings
     pub fn delete_server_group(&mut self, id: Uuid) -> Result<(), String> {
-        // Check if any forwardings reference this group
         let has_forwardings = self.forwardings.values().any(|f| f.server_group_id == id);
         if has_forwardings {
             return Err("Cannot delete server group with existing forwardings. Delete all forwardings first.".to_string());
@@ -548,7 +414,6 @@ impl ConfigStore {
 
     /// Add or update a forwarding
     pub fn upsert_forwarding(&mut self, mut forwarding: Forwarding) -> Result<Uuid, String> {
-        // Verify server group exists
         if !self.server_groups.contains_key(&forwarding.server_group_id) {
             return Err("Server group not found".to_string());
         }
@@ -580,7 +445,6 @@ impl ConfigStore {
     // ============================================================================
 
     /// Build a TunnelClientConfig from a forwarding ID
-    /// Combines the server group settings with the forwarding's source/target
     pub fn build_tunnel_config(&self, forwarding_id: Uuid) -> Result<TunnelClientConfig, String> {
         let forwarding = self.get_forwarding(forwarding_id)
             .ok_or_else(|| "Forwarding not found".to_string())?;
@@ -602,24 +466,17 @@ impl ConfigStore {
     // Export/Import
     // ============================================================================
 
-    /// Export all configs (auth_tokens are stripped; they're stored in the OS keyring)
+    /// Export all configs (tokens are ageenc: strings, included as-is)
     pub fn export(&self) -> ExportData {
-        // Create a copy with secrets cleared (same as save())
-        let mut config_to_export = self.clone();
-        for group in config_to_export.server_groups.values_mut() {
-            group.auth_token = None;
-            group.alpn_token = None;
-        }
         ExportData {
             version: 1,
             exported_at: current_timestamp(),
-            config: config_to_export,
+            config: self.clone(),
             encryption_recipient: None,
         }
     }
 
     /// Import configs from export data
-    /// Auth tokens are NOT imported (they're not in the export) - users must add them manually
     pub fn import(&mut self, data: ExportData) -> ImportResult {
         let mut result = ImportResult {
             success: true,
@@ -630,7 +487,6 @@ impl ConfigStore {
             errors: vec![],
         };
 
-        // Validate version
         if data.version != 1 {
             result.success = false;
             result.errors.push(format!("Unsupported export version: {}", data.version));
@@ -639,11 +495,8 @@ impl ConfigStore {
 
         let now = current_timestamp();
 
-        // Import server groups (auth_token will be None since export() strips them)
         for (id, mut group) in data.config.server_groups {
-            let is_update = self.server_groups.contains_key(&id);
-            if is_update {
-                let existing = self.server_groups.get(&id).unwrap();
+            if let Some(existing) = self.server_groups.get(&id) {
                 group.created_at = existing.created_at;
                 group.updated_at = now;
             } else {
@@ -655,9 +508,7 @@ impl ConfigStore {
             result.groups_imported += 1;
         }
 
-        // Import forwardings
         for (id, mut forwarding) in data.config.forwardings {
-            // Verify server group exists
             if !self.server_groups.contains_key(&forwarding.server_group_id) {
                 result.errors.push(format!(
                     "Server group '{}' not found for forwarding '{}'",
@@ -667,9 +518,7 @@ impl ConfigStore {
                 continue;
             }
 
-            let is_update = self.forwardings.contains_key(&id);
-            if is_update {
-                let existing = self.forwardings.get(&id).unwrap();
+            if let Some(existing) = self.forwardings.get(&id) {
                 forwarding.created_at = existing.created_at;
                 forwarding.updated_at = now;
             } else {
@@ -681,7 +530,6 @@ impl ConfigStore {
             result.forwardings_imported += 1;
         }
 
-        // Save the updated config store
         if let Err(e) = self.save() {
             result.success = false;
             result.errors.push(format!("Failed to save config store: {}", e));
@@ -716,7 +564,6 @@ mod tests {
     fn test_build_tunnel_config() {
         let mut store = ConfigStore::default();
 
-        // Create a server group
         let group_id = Uuid::new_v4();
         let group = ServerGroup {
             id: group_id,
@@ -730,7 +577,6 @@ mod tests {
         };
         store.server_groups.insert(group_id, group);
 
-        // Create a forwarding
         let fwd_id = Uuid::new_v4();
         let forwarding = Forwarding {
             id: fwd_id,
@@ -743,7 +589,6 @@ mod tests {
         };
         store.forwardings.insert(fwd_id, forwarding);
 
-        // Build config
         let config = store.build_tunnel_config(fwd_id).unwrap();
         assert_eq!(config.iroh.server_node_id, "test_node_123");
         assert_eq!(config.iroh.request_source, Some("tcp://127.0.0.1:22".to_string()));
@@ -769,7 +614,6 @@ mod tests {
 
         let toml_str = config.to_commented_toml("My SSH", "Prod Servers");
 
-        // Parse the generated TOML (comments are stripped by the parser)
         let parsed: toml::Value = toml_str.parse().expect("generated TOML must be valid");
         assert_eq!(parsed["role"].as_str().unwrap(), "client");
         assert_eq!(parsed["mode"].as_str().unwrap(), "iroh");
@@ -783,7 +627,6 @@ mod tests {
         assert_eq!(parsed["iroh"]["transport"]["receive_window"].as_integer().unwrap(), 1048576);
         assert!(parsed["iroh"]["transport"].get("send_window").is_none());
 
-        // Verify header comment is present
         assert!(toml_str.contains("# tunnel-rs client config for forwarding: My SSH"));
         assert!(toml_str.contains("# Server group: Prod Servers"));
     }

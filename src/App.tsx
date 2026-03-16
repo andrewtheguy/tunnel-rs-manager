@@ -11,9 +11,9 @@ import './App.css';
 type View = 'list' | 'create-group' | 'edit-group' | 'create-forwarding' | 'edit-forwarding';
 
 type PendingAction =
-  | { type: 'export' }
-  | { type: 'import'; json: string }
-  | { type: 'toml-export'; forwardingId: string };
+  | { type: 'toml-export'; forwardingId: string }
+  | { type: 'create-group'; form: ServerGroupFormData }
+  | { type: 'edit-group'; form: ServerGroupFormData };
 
 function App() {
   const { serverGroups, loading: groupsLoading, createServerGroup, updateServerGroup, deleteServerGroup, getServerGroup, refresh: refreshGroups } = useServerGroups();
@@ -21,11 +21,8 @@ function App() {
   const { instances, startTunnel, stopTunnel, loading: instancesLoading } = useTunnelInstances();
   const { customBinaryPath, isUsingBundled, binaryVersion, selectCustomBinaryPath, useBundledBinary } = useBinaryPath();
 
-  // Hidden file input for import
   const importInputRef = useRef<HTMLInputElement>(null);
-  // Ref to main content for scroll restoration
   const mainContentRef = useRef<HTMLElement>(null);
-  // Saved scroll position when leaving list view
   const savedScrollPos = useRef(0);
 
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
@@ -55,47 +52,107 @@ function App() {
     }
   }, [view]);
 
-  // Save scroll position before leaving list view
   const saveScrollPosition = useCallback(() => {
     if (mainContentRef.current) {
       savedScrollPos.current = mainContentRef.current.scrollTop;
     }
   }, []);
 
-  // Handlers for Server Groups
+  // ── Age key helpers ──
+
+  const showAgeKeySetup = useCallback((action: PendingAction) => {
+    setPendingAction(action);
+    setAgeKeyMode('setup');
+    setAgeKeyRecipients([]);
+    setShowAgeKeyDialog(true);
+  }, []);
+
+  const resolveRecipientForToml = useCallback(async (action: PendingAction): Promise<string | null> => {
+    const keyExists = await invoke<boolean>('check_age_key_exists');
+    if (!keyExists) {
+      showAgeKeySetup(action);
+      return null;
+    }
+    const recipients = await invoke<string[]>('list_age_recipients');
+    if (recipients.length === 0) {
+      showAgeKeySetup(action);
+      return null;
+    }
+    if (recipients.length === 1) {
+      return recipients[0];
+    }
+    setPendingAction(action);
+    setAgeKeyMode('select');
+    setAgeKeyRecipients(recipients);
+    setShowAgeKeyDialog(true);
+    return null;
+  }, [showAgeKeySetup]);
+
+  const handleAgeKeyGenerate = useCallback(async () => {
+    return await invoke<string>('generate_age_key');
+  }, []);
+
+  const handleAgeKeyCancel = useCallback(() => {
+    setShowAgeKeyDialog(false);
+    setPendingAction(null);
+  }, []);
+
+  // ── Server Group handlers ──
+
   const handleAddGroup = useCallback(() => {
     saveScrollPosition();
     setView('create-group');
     setEditingGroup(null);
   }, [saveScrollPosition]);
 
-  const handleEditGroup = useCallback((group: ServerGroup) => {
+  const handleEditGroup = useCallback(async (group: ServerGroup) => {
     saveScrollPosition();
-    setEditingGroup(group);
+    try {
+      const [auth, alpn] = await invoke<[string, string]>('get_decrypted_tokens', { id: group.id });
+      setEditingGroup({ ...group, auth_token: auth, alpn_token: alpn });
+    } catch {
+      setEditingGroup({ ...group, auth_token: '', alpn_token: '' });
+    }
     setView('edit-group');
   }, [saveScrollPosition]);
 
-  const handleCreateGroupSubmit = useCallback(async (form: ServerGroupFormData) => {
+  const performCreateGroup = useCallback(async (form: ServerGroupFormData) => {
     try {
       await createServerGroup(form);
       setView('list');
     } catch (e) {
-      alert(`Failed to create server group: ${e instanceof Error ? e.message : e}`);
-    }
-  }, [createServerGroup]);
-
-  const handleEditGroupSubmit = useCallback(async (form: ServerGroupFormData) => {
-    try {
-      if (!editingGroup) {
-        throw new Error('No editing group selected');
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg.includes('Age key required')) {
+        showAgeKeySetup({ type: 'create-group', form });
+      } else {
+        alert(`Failed to create server group: ${msg}`);
       }
+    }
+  }, [createServerGroup, showAgeKeySetup]);
+
+  const performEditGroup = useCallback(async (form: ServerGroupFormData) => {
+    try {
+      if (!editingGroup) throw new Error('No editing group selected');
       await updateServerGroup(editingGroup.id, form);
       setView('list');
       setEditingGroup(null);
     } catch (e) {
-      alert(`Failed to update server group: ${e instanceof Error ? e.message : e}`);
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg.includes('Age key required')) {
+        showAgeKeySetup({ type: 'edit-group', form });
+      } else {
+        alert(`Failed to update server group: ${msg}`);
+      }
     }
-  }, [editingGroup, updateServerGroup]);
+  }, [editingGroup, updateServerGroup, showAgeKeySetup]);
+
+  const handleCreateGroupSubmit = useCallback(async (form: ServerGroupFormData) => {
+    await performCreateGroup(form);
+  }, [performCreateGroup]);
+
+  const handleEditGroupSubmit = useCallback(async (form: ServerGroupFormData) => {
+    await performEditGroup(form);
+  }, [performEditGroup]);
 
   const handleDeleteGroup = useCallback((id: string) => {
     const group = getServerGroup(id);
@@ -114,7 +171,8 @@ function App() {
     }
   }, [deleteServerGroup, selectedGroupId]);
 
-  // Handlers for Forwardings
+  // ── Forwarding handlers ──
+
   const handleAddForwarding = useCallback((groupId: string) => {
     saveScrollPosition();
     setAddForwardingToGroupId(groupId);
@@ -131,9 +189,7 @@ function App() {
 
   const handleCreateForwardingSubmit = useCallback(async (form: ForwardingFormData) => {
     try {
-      if (!addForwardingToGroupId) {
-        throw new Error('No server group selected');
-      }
+      if (!addForwardingToGroupId) throw new Error('No server group selected');
       await createForwarding(addForwardingToGroupId, form);
       setView('list');
       setAddForwardingToGroupId(null);
@@ -144,9 +200,7 @@ function App() {
 
   const handleEditForwardingSubmit = useCallback(async (form: ForwardingFormData) => {
     try {
-      if (!editingForwarding) {
-        throw new Error('No editing forwarding selected');
-      }
+      if (!editingForwarding) throw new Error('No editing forwarding selected');
       await updateForwarding(editingForwarding.id, editingForwarding.server_group_id, form);
       setView('list');
       setEditingForwarding(null);
@@ -196,7 +250,8 @@ function App() {
     setPendingDelete(null);
   }, []);
 
-  // Handlers for Tunnels
+  // ── Tunnel handlers ──
+
   const handleStartForwarding = useCallback(async (id: string) => {
     try {
       await startTunnel(id);
@@ -220,7 +275,8 @@ function App() {
     setAddForwardingToGroupId(null);
   }, []);
 
-  // Binary path handlers
+  // ── Binary path handlers ──
+
   const handleSelectCustomBinaryPath = useCallback(async () => {
     try {
       await selectCustomBinaryPath();
@@ -237,92 +293,23 @@ function App() {
     }
   }, [useBundledBinary]);
 
-  // Age key resolution: returns recipient or opens dialog
-  const resolveRecipient = useCallback(async (action: PendingAction): Promise<string | null> => {
-    const keyExists = await invoke<boolean>('check_age_key_exists');
-    if (!keyExists) {
-      setPendingAction(action);
-      setAgeKeyMode('setup');
-      setAgeKeyRecipients([]);
-      setShowAgeKeyDialog(true);
-      return null;
-    }
-    const recipients = await invoke<string[]>('list_age_recipients');
-    if (recipients.length === 0) {
-      // Key file exists but no valid keys — treat as setup
-      setPendingAction(action);
-      setAgeKeyMode('setup');
-      setAgeKeyRecipients([]);
-      setShowAgeKeyDialog(true);
-      return null;
-    }
-    if (recipients.length === 1) {
-      return recipients[0];
-    }
-    // Multiple keys — show select dialog
-    setPendingAction(action);
-    setAgeKeyMode('select');
-    setAgeKeyRecipients(recipients);
-    setShowAgeKeyDialog(true);
-    return null;
-  }, []);
+  // ── Export/Import handlers ──
 
-  // Perform the pending action with the resolved recipient
-  const performActionWithRecipient = useCallback(async (recipient: string, action: PendingAction) => {
-    try {
-      if (action.type === 'export') {
-        const json = await invoke<string>('export_configs', { recipient });
-        const filePath = await save({
-          defaultPath: 'tunnel-rs-configs.json',
-          filters: [{ name: 'JSON', extensions: ['json'] }],
-        });
-        if (filePath) {
-          await writeTextFile(filePath, json);
-        }
-      } else if (action.type === 'import') {
-        const result = await invoke<ImportResult>('import_configs', { json: action.json });
-        await Promise.all([refreshGroups(), refreshForwardings()]);
-        const messages: string[] = [];
-        if (result.groups_imported > 0) messages.push(`${result.groups_imported} server group(s) imported`);
-        if (result.forwardings_imported > 0) messages.push(`${result.forwardings_imported} forwarding(s) imported`);
-        if (result.groups_skipped > 0) messages.push(`${result.groups_skipped} server group(s) skipped`);
-        if (result.forwardings_skipped > 0) messages.push(`${result.forwardings_skipped} forwarding(s) skipped`);
-        if (result.errors.length > 0) messages.push(`Warnings: ${result.errors.join(', ')}`);
-        if (result.success) {
-          alert(`Import completed:\n${messages.join('\n')}`);
-        } else {
-          alert(`Import failed:\n${result.errors.join('\n')}`);
-        }
-      } else if (action.type === 'toml-export') {
-        const tomlContent = await invoke<string>('export_forwarding_toml', { forwardingId: action.forwardingId, recipient });
-        const forwarding = getForwarding(action.forwardingId);
-        const defaultName = forwarding ? `${forwarding.name}.toml` : 'forwarding.toml';
-        const filePath = await save({
-          defaultPath: defaultName,
-          filters: [{ name: 'TOML', extensions: ['toml'] }],
-        });
-        if (filePath) {
-          await writeTextFile(filePath, tomlContent);
-        }
-      }
-    } catch (e) {
-      alert(`Operation failed: ${e instanceof Error ? e.message : e}`);
-    }
-  }, [refreshGroups, refreshForwardings, getForwarding]);
-
-  // Export handler
   const handleExport = useCallback(async () => {
     try {
-      const recipient = await resolveRecipient({ type: 'export' });
-      if (recipient) {
-        await performActionWithRecipient(recipient, { type: 'export' });
+      const json = await invoke<string>('export_configs');
+      const filePath = await save({
+        defaultPath: 'tunnel-rs-configs.json',
+        filters: [{ name: 'JSON', extensions: ['json'] }],
+      });
+      if (filePath) {
+        await writeTextFile(filePath, json);
       }
     } catch (e) {
       alert(`Export failed: ${e instanceof Error ? e.message : e}`);
     }
-  }, [resolveRecipient, performActionWithRecipient]);
+  }, []);
 
-  // Import handler
   const handleImportClick = useCallback(() => {
     importInputRef.current?.click();
   }, []);
@@ -333,80 +320,81 @@ function App() {
 
     try {
       const json = await file.text();
-      const hasCreds = await invoke<boolean>('check_import_has_credentials', { json });
-
-      if (hasCreds) {
-        // Need age key to decrypt — check key exists
-        const keyExists = await invoke<boolean>('check_age_key_exists');
-        if (!keyExists) {
-          setPendingAction({ type: 'import', json });
-          setAgeKeyMode('setup');
-          setAgeKeyRecipients([]);
-          setShowAgeKeyDialog(true);
-        } else {
-          // Key exists, proceed directly — import doesn't need recipient selection
-          await performActionWithRecipient('', { type: 'import', json });
-        }
+      const result = await invoke<ImportResult>('import_configs', { json });
+      await Promise.all([refreshGroups(), refreshForwardings()]);
+      const messages: string[] = [];
+      if (result.groups_imported > 0) messages.push(`${result.groups_imported} server group(s) imported`);
+      if (result.forwardings_imported > 0) messages.push(`${result.forwardings_imported} forwarding(s) imported`);
+      if (result.groups_skipped > 0) messages.push(`${result.groups_skipped} server group(s) skipped`);
+      if (result.forwardings_skipped > 0) messages.push(`${result.forwardings_skipped} forwarding(s) skipped`);
+      if (result.errors.length > 0) messages.push(`Warnings: ${result.errors.join(', ')}`);
+      if (result.success) {
+        alert(`Import completed:\n${messages.join('\n')}`);
       } else {
-        // No credentials, import directly
-        const result = await invoke<ImportResult>('import_configs', { json });
-        await Promise.all([refreshGroups(), refreshForwardings()]);
-        const messages: string[] = [];
-        if (result.groups_imported > 0) messages.push(`${result.groups_imported} server group(s) imported`);
-        if (result.forwardings_imported > 0) messages.push(`${result.forwardings_imported} forwarding(s) imported`);
-        if (result.groups_skipped > 0) messages.push(`${result.groups_skipped} server group(s) skipped`);
-        if (result.forwardings_skipped > 0) messages.push(`${result.forwardings_skipped} forwarding(s) skipped`);
-        if (result.errors.length > 0) messages.push(`Warnings: ${result.errors.join(', ')}`);
-        if (result.success) {
-          alert(`Import completed:\n${messages.join('\n')}`);
-        } else {
-          alert(`Import failed:\n${result.errors.join('\n')}`);
-        }
+        alert(`Import failed:\n${result.errors.join('\n')}`);
       }
     } catch (e) {
       alert(`Failed to import configs: ${e instanceof Error ? e.message : e}`);
     } finally {
       e.target.value = '';
     }
-  }, [refreshGroups, refreshForwardings, performActionWithRecipient]);
+  }, [refreshGroups, refreshForwardings]);
 
-  // TOML export handler
+  // ── TOML export ──
+
   const handleExportForwardingToml = useCallback(async (id: string) => {
     try {
-      const recipient = await resolveRecipient({ type: 'toml-export', forwardingId: id });
+      const action: PendingAction = { type: 'toml-export', forwardingId: id };
+      const recipient = await resolveRecipientForToml(action);
       if (recipient) {
-        await performActionWithRecipient(recipient, { type: 'toml-export', forwardingId: id });
+        const tomlContent = await invoke<string>('export_forwarding_toml', { forwardingId: id, recipient });
+        const forwarding = getForwarding(id);
+        const defaultName = forwarding ? `${forwarding.name}.toml` : 'forwarding.toml';
+        const filePath = await save({
+          defaultPath: defaultName,
+          filters: [{ name: 'TOML', extensions: ['toml'] }],
+        });
+        if (filePath) {
+          await writeTextFile(filePath, tomlContent);
+        }
       }
     } catch (e) {
       alert(`Failed to export forwarding config: ${e instanceof Error ? e.message : e}`);
     }
-  }, [resolveRecipient, performActionWithRecipient]);
+  }, [resolveRecipientForToml, getForwarding]);
 
-  // Age key dialog callbacks
+  // ── Age key dialog completion ──
+
   const handleAgeKeyComplete = useCallback(async (recipient: string) => {
     setShowAgeKeyDialog(false);
     const action = pendingAction;
     setPendingAction(null);
-    if (action) {
-      if (action.type === 'import') {
-        // Import doesn't use recipient for encryption, just needs key to exist for decryption
-        await performActionWithRecipient(recipient, action);
-      } else {
-        await performActionWithRecipient(recipient, action);
+    if (!action) return;
+
+    try {
+      if (action.type === 'toml-export') {
+        const tomlContent = await invoke<string>('export_forwarding_toml', { forwardingId: action.forwardingId, recipient });
+        const forwarding = getForwarding(action.forwardingId);
+        const defaultName = forwarding ? `${forwarding.name}.toml` : 'forwarding.toml';
+        const filePath = await save({
+          defaultPath: defaultName,
+          filters: [{ name: 'TOML', extensions: ['toml'] }],
+        });
+        if (filePath) {
+          await writeTextFile(filePath, tomlContent);
+        }
+      } else if (action.type === 'create-group') {
+        await performCreateGroup(action.form);
+      } else if (action.type === 'edit-group') {
+        await performEditGroup(action.form);
       }
+    } catch (e) {
+      alert(`Operation failed: ${e instanceof Error ? e.message : e}`);
     }
-  }, [pendingAction, performActionWithRecipient]);
+  }, [pendingAction, getForwarding, performCreateGroup, performEditGroup]);
 
-  const handleAgeKeyCancel = useCallback(() => {
-    setShowAgeKeyDialog(false);
-    setPendingAction(null);
-  }, []);
+  // ── Scroll/selection ──
 
-  const handleAgeKeyGenerate = useCallback(async () => {
-    return await invoke<string>('generate_age_key');
-  }, []);
-
-  // Scroll a group card into view in the main content area
   const scrollToGroupCard = useCallback((groupId: string) => {
     if (view !== 'list') return;
     requestAnimationFrame(() => {
@@ -415,7 +403,6 @@ function App() {
     });
   }, [view]);
 
-  // Sidebar selection handlers
   const handleSelectGroup = useCallback((id: string) => {
     setSelectedGroupId(id);
     setSelectedForwardingId(null);
@@ -431,7 +418,8 @@ function App() {
     }
   }, [getForwarding, scrollToGroupCard]);
 
-  // Memoized form data
+  // ── Memoized data ──
+
   const editingGroupFormData = useMemo(
     () => editingGroup ? serverGroupToForm(editingGroup) : undefined,
     [editingGroup]
@@ -448,7 +436,6 @@ function App() {
     return group?.name ?? '';
   }, [addForwardingToGroupId, getServerGroup]);
 
-  // Stats
   const runningCount = instances.filter(i => i.status === 'running' || i.status === 'starting' || i.status === 'reconnecting').length;
 
   return (

@@ -4,11 +4,12 @@ use std::path::{Path, PathBuf};
 
 const AGEENC_PREFIX: &str = "ageenc:";
 
-/// Get the default age key file path: `<app_data_dir>/age.key`
+/// Get the default age key file path: `~/.config/tunnel-rs/age.key`
+/// Shared with the tunnel-rs binary.
 pub fn default_age_key_path() -> Result<PathBuf, String> {
-    let data_dir = dirs::data_dir()
-        .ok_or_else(|| "Could not find data directory".to_string())?;
-    Ok(data_dir.join("tunnel-rs-manager").join("age.key"))
+    let home = dirs::home_dir()
+        .ok_or_else(|| "Could not find home directory".to_string())?;
+    Ok(home.join(".config/tunnel-rs/age.key"))
 }
 
 /// Check if an age key file exists at the default path.

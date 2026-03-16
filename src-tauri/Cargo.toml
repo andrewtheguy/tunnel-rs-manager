@@ -27,7 +27,6 @@ tracing = "0.1"
 age = { version = "0.11", default-features = false }
 jiff = "0.2"
 base64 = "0.22"
-keyring = { version = "3", features = ["apple-native", "windows-native", "linux-native"] }
 toml = "0.8"
 
 [dev-dependencies]
