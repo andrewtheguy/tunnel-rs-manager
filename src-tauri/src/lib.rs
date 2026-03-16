@@ -5,7 +5,6 @@ mod crypto;
 mod process;
 
 use config::{AppSettings, ConfigStore, ExportData, Forwarding, ImportResult, SecretsStore, ServerGroup};
-use crypto::EncryptedToken;
 use process::{ProcessManager, TunnelInstanceView};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -349,46 +348,23 @@ fn get_config_load_error(state: State<'_, AppState>) -> Option<String> {
 #[tauri::command]
 async fn export_configs(
     state: State<'_, AppState>,
-    passphrase: Option<String>,
+    recipient: String,
 ) -> Result<String, String> {
-    if let Some(ref pass) = passphrase {
-        crypto::validate_passphrase(pass)?;
-    }
     let store = state.config_store.lock().await;
-    let export_data = store.export();
+    let mut export_data = store.export();
+    export_data.encryption_recipient = Some(recipient.clone());
 
-    // Serialize to JSON Value so we can inject encrypted tokens per server group
-    let mut value = serde_json::to_value(&export_data)
-        .map_err(|e| format!("Failed to serialize export data: {}", e))?;
-
-    if let Some(ref pass) = passphrase {
-        if let Some(groups) = value
-            .get_mut("config")
-            .and_then(|c| c.get_mut("server_groups"))
-            .and_then(|g| g.as_object_mut())
-        {
-            for (_, group) in groups.iter_mut() {
-                let node_id = group
-                    .get("server_node_id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-
-                if let Some(auth) = state.secrets_store.get_token(&node_id) {
-                    let encrypted = crypto::encrypt_token(&auth, pass)?;
-                    group["auth_token"] = serde_json::to_value(&encrypted)
-                        .map_err(|e| format!("Failed to serialize encrypted token: {}", e))?;
-                }
-                if let Some(alpn) = state.secrets_store.get_alpn_token(&node_id) {
-                    let encrypted = crypto::encrypt_token(&alpn, pass)?;
-                    group["alpn_token"] = serde_json::to_value(&encrypted)
-                        .map_err(|e| format!("Failed to serialize encrypted token: {}", e))?;
-                }
-            }
+    // Encrypt auth_token and alpn_token for each server group
+    for group in export_data.config.server_groups.values_mut() {
+        if let Some(auth) = state.secrets_store.get_token(&group.server_node_id) {
+            group.auth_token = Some(crypto::encrypt_value(&auth, &recipient)?);
+        }
+        if let Some(alpn) = state.secrets_store.get_alpn_token(&group.server_node_id) {
+            group.alpn_token = Some(crypto::encrypt_value(&alpn, &recipient)?);
         }
     }
 
-    serde_json::to_string_pretty(&value)
+    serde_json::to_string_pretty(&export_data)
         .map_err(|e| format!("Failed to serialize export data: {}", e))
 }
 
@@ -396,64 +372,42 @@ async fn export_configs(
 async fn import_configs(
     state: State<'_, AppState>,
     json: String,
-    passphrase: Option<String>,
 ) -> Result<ImportResult, String> {
-    // Parse as Value so we can extract encrypted tokens before deserializing
-    let mut value: serde_json::Value = serde_json::from_str(&json)
+    let mut export_data: ExportData = serde_json::from_str(&json)
         .map_err(|e| format!("Invalid import data: {}", e))?;
 
-    // Extract and decrypt tokens from server groups
+    let key_path = crypto::default_age_key_path()?;
+
+    // Decrypt age-encrypted tokens from server groups
     let mut decrypted_tokens: HashMap<String, (Option<String>, Option<String>)> = HashMap::new();
 
-    if let Some(groups) = value
-        .get_mut("config")
-        .and_then(|c| c.get_mut("server_groups"))
-        .and_then(|g| g.as_object_mut())
-    {
-        for (_, group) in groups.iter_mut() {
-            let node_id = group
-                .get("server_node_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
+    for group in export_data.config.server_groups.values_mut() {
+        let node_id = group.server_node_id.clone();
+        let mut auth = None;
+        let mut alpn = None;
 
-            let mut auth = None;
-            let mut alpn = None;
-
-            // Check if auth_token is an encrypted object (has "alg" field)
-            if group.get("auth_token").map_or(false, |v| v.is_object()) {
-                let envelope: EncryptedToken = serde_json::from_value(group["auth_token"].clone())
-                    .map_err(|e| format!("Invalid encrypted auth_token: {}", e))?;
-                let pass = passphrase.as_deref()
-                    .ok_or_else(|| "Passphrase required to import encrypted credentials".to_string())?;
-                auth = Some(crypto::decrypt_token(&envelope, pass)?);
-                group["auth_token"] = serde_json::Value::Null;
-            }
-
-            if group.get("alpn_token").map_or(false, |v| v.is_object()) {
-                let envelope: EncryptedToken = serde_json::from_value(group["alpn_token"].clone())
-                    .map_err(|e| format!("Invalid encrypted alpn_token: {}", e))?;
-                let pass = passphrase.as_deref()
-                    .ok_or_else(|| "Passphrase required to import encrypted credentials".to_string())?;
-                alpn = Some(crypto::decrypt_token(&envelope, pass)?);
-                group["alpn_token"] = serde_json::Value::Null;
-            }
-
-            if auth.is_some() || alpn.is_some() {
-                decrypted_tokens.insert(node_id, (auth, alpn));
+        if let Some(ref token) = group.auth_token {
+            if crypto::is_age_encrypted(token) {
+                auth = Some(crypto::decrypt_value(token, &key_path)?);
+                group.auth_token = None;
             }
         }
-    }
 
-    // Now deserialize the cleaned JSON into ExportData
-    let export_data: ExportData = serde_json::from_value(value)
-        .map_err(|e| format!("Invalid import data: {}", e))?;
+        if let Some(ref token) = group.alpn_token {
+            if crypto::is_age_encrypted(token) {
+                alpn = Some(crypto::decrypt_value(token, &key_path)?);
+                group.alpn_token = None;
+            }
+        }
+
+        if auth.is_some() || alpn.is_some() {
+            decrypted_tokens.insert(node_id, (auth, alpn));
+        }
+    }
 
     let mut store = state.config_store.lock().await;
     let result = store.import(export_data);
 
-    // Only persist tokens if the import succeeded (avoids orphan secrets on
-    // version mismatch or save failure)
     if result.success {
         for (node_id, (auth, alpn)) in decrypted_tokens {
             if let Some(a) = auth {
@@ -464,7 +418,6 @@ async fn import_configs(
             }
         }
 
-        // Rehydrate in-memory auth tokens from secrets store after import
         store.restore_secrets(&state.secrets_store);
     }
 
@@ -481,10 +434,15 @@ fn check_import_has_credentials(json: String) -> Result<bool, String> {
         .and_then(|g| g.as_object())
     {
         for (_, group) in groups {
-            if group.get("auth_token").map_or(false, |v| v.is_object())
-                || group.get("alpn_token").map_or(false, |v| v.is_object())
-            {
-                return Ok(true);
+            if let Some(auth) = group.get("auth_token").and_then(|v| v.as_str()) {
+                if crypto::is_age_encrypted(auth) {
+                    return Ok(true);
+                }
+            }
+            if let Some(alpn) = group.get("alpn_token").and_then(|v| v.as_str()) {
+                if crypto::is_age_encrypted(alpn) {
+                    return Ok(true);
+                }
             }
         }
     }
@@ -499,6 +457,7 @@ fn check_import_has_credentials(json: String) -> Result<bool, String> {
 async fn export_forwarding_toml(
     state: State<'_, AppState>,
     forwarding_id: String,
+    recipient: String,
 ) -> Result<String, String> {
     let uuid = Uuid::parse_str(&forwarding_id).map_err(|e| format!("Invalid UUID: {}", e))?;
 
@@ -517,10 +476,44 @@ async fn export_forwarding_toml(
     let group_name = group.name.clone();
 
     let mut config = store.build_tunnel_config(uuid)?;
-    // Replace inline secrets with file path placeholders
-    config.iroh.auth_token_file = config.iroh.auth_token.take().map(|_| "/path/to/auth_token_file".to_string());
-    config.iroh.alpn_token_file = config.iroh.alpn_token.take().map(|_| "/path/to/alpn_token_file".to_string());
+
+    // Encrypt inline secrets with age
+    if let Some(auth) = config.iroh.auth_token.take() {
+        config.iroh.auth_token = Some(crypto::encrypt_value(&auth, &recipient)?);
+    }
+    if let Some(alpn) = config.iroh.alpn_token.take() {
+        config.iroh.alpn_token = Some(crypto::encrypt_value(&alpn, &recipient)?);
+    }
+
+    let key_path = crypto::default_age_key_path()?;
+    config.iroh.encryption_key_file = Some(key_path.to_string_lossy().to_string());
+    config.iroh.encryption_recipient = Some(recipient);
+
     Ok(config.to_commented_toml(&forwarding_name, &group_name))
+}
+
+// ============================================================================
+// Age Key Commands
+// ============================================================================
+
+#[tauri::command]
+fn check_age_key_exists() -> Result<bool, String> {
+    crypto::age_key_exists()
+}
+
+#[tauri::command]
+fn list_age_recipients() -> Result<Vec<String>, String> {
+    crypto::list_age_recipients()
+}
+
+#[tauri::command]
+fn generate_age_key() -> Result<String, String> {
+    crypto::generate_age_key()
+}
+
+#[tauri::command]
+fn get_age_key_path() -> Result<String, String> {
+    crypto::default_age_key_path().map(|p| p.to_string_lossy().to_string())
 }
 
 // ============================================================================
@@ -711,6 +704,11 @@ pub fn run() {
             import_configs,
             check_import_has_credentials,
             export_forwarding_toml,
+            // Age key commands
+            check_age_key_exists,
+            list_age_recipients,
+            generate_age_key,
+            get_age_key_path,
             // Process commands
             list_instances,
             get_instance,

@@ -50,6 +50,10 @@ pub struct IrohConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub alpn_token_file: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub encryption_key_file: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encryption_recipient: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub transport: Option<TransportConfig>,
 }
 
@@ -78,6 +82,8 @@ impl TunnelClientConfig {
                 auth_token_file: None,
                 alpn_token: None,
                 alpn_token_file: None,
+                encryption_key_file: None,
+                encryption_recipient: None,
                 transport: None,
             },
         }
@@ -150,6 +156,16 @@ impl TunnelClientConfig {
         if let Some(ref v) = self.iroh.alpn_token_file {
             out.push_str("\n# Path to file containing the ALPN token\n");
             out.push_str(&format!("alpn_token_file = {}\n", toml::Value::String(v.clone())));
+        }
+
+        if let Some(ref v) = self.iroh.encryption_key_file {
+            out.push_str("\n# Path to age identity file for decrypting inline secrets\n");
+            out.push_str(&format!("encryption_key_file = {}\n", toml::Value::String(v.clone())));
+        }
+
+        if let Some(ref v) = self.iroh.encryption_recipient {
+            out.push_str("\n# Age public key used to encrypt inline secrets\n");
+            out.push_str(&format!("encryption_recipient = {}\n", toml::Value::String(v.clone())));
         }
 
         if let Some(ref transport) = self.iroh.transport {
@@ -226,6 +242,8 @@ pub struct ExportData {
     pub version: u32,
     pub exported_at: u64,
     pub config: ConfigStore,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encryption_recipient: Option<String>,
 }
 
 /// Result of import operation
@@ -596,6 +614,7 @@ impl ConfigStore {
             version: 1,
             exported_at: current_timestamp(),
             config: config_to_export,
+            encryption_recipient: None,
         }
     }
 

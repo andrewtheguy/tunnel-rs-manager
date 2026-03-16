@@ -2,13 +2,18 @@ import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { save } from '@tauri-apps/plugin-dialog';
 import { writeTextFile } from '@tauri-apps/plugin-fs';
-import { Sidebar, ServerGroupCard, ServerGroupForm, ForwardingForm, ConfirmDialog, PassphraseDialog } from './components';
+import { Sidebar, ServerGroupCard, ServerGroupForm, ForwardingForm, ConfirmDialog, AgeKeyDialog } from './components';
 import { useServerGroups, useForwardings, useTunnelInstances, useBinaryPath } from './hooks';
 import type { ServerGroup, Forwarding, ServerGroupFormData, ForwardingFormData, ImportResult } from './types';
 import { serverGroupToForm, forwardingToForm } from './types';
 import './App.css';
 
 type View = 'list' | 'create-group' | 'edit-group' | 'create-forwarding' | 'edit-forwarding';
+
+type PendingAction =
+  | { type: 'export' }
+  | { type: 'import'; json: string }
+  | { type: 'toml-export'; forwardingId: string };
 
 function App() {
   const { serverGroups, loading: groupsLoading, createServerGroup, updateServerGroup, deleteServerGroup, getServerGroup, refresh: refreshGroups } = useServerGroups();
@@ -32,19 +37,15 @@ function App() {
   const [pendingDelete, setPendingDelete] = useState<{ type: 'group' | 'forwarding'; id: string; name: string } | null>(null);
   const [deleting, setDeleting] = useState(false);
 
-  // Passphrase dialog state
-  const [showExportPassphrase, setShowExportPassphrase] = useState(false);
-  const [showImportPassphrase, setShowImportPassphrase] = useState(false);
-  const [importJson, setImportJson] = useState<string | null>(null);
-  const [exportLoading, setExportLoading] = useState(false);
-  const [importLoading, setImportLoading] = useState(false);
-  const [exportError, setExportError] = useState<string | undefined>();
-  const [importError, setImportError] = useState<string | undefined>();
+  // Age key dialog state
+  const [showAgeKeyDialog, setShowAgeKeyDialog] = useState(false);
+  const [ageKeyMode, setAgeKeyMode] = useState<'setup' | 'select'>('setup');
+  const [ageKeyRecipients, setAgeKeyRecipients] = useState<string[]>([]);
+  const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
 
   // Restore scroll position when returning to list view
   useEffect(() => {
     if (view === 'list' && mainContentRef.current && savedScrollPos.current > 0) {
-      // Use requestAnimationFrame to ensure DOM is fully rendered before restoring scroll
       const rafId = requestAnimationFrame(() => {
         if (mainContentRef.current) {
           mainContentRef.current.scrollTop = savedScrollPos.current;
@@ -156,7 +157,6 @@ function App() {
   }, [editingForwarding, updateForwarding]);
 
   const handleDeleteForwarding = useCallback((id: string) => {
-    // Check if running
     const instance = instances.find(i => i.forwarding_id === id);
     if (instance && (instance.status === 'running' || instance.status === 'starting' || instance.status === 'reconnecting')) {
       alert('Cannot delete a running forwarding. Stop it first.');
@@ -213,24 +213,6 @@ function App() {
     }
   }, [stopTunnel]);
 
-  const handleExportForwardingToml = useCallback(async (id: string) => {
-    try {
-      const tomlContent = await invoke<string>('export_forwarding_toml', { forwardingId: id });
-      const forwarding = getForwarding(id);
-      const defaultName = forwarding ? `${forwarding.name}.toml` : 'forwarding.toml';
-
-      const filePath = await save({
-        defaultPath: defaultName,
-        filters: [{ name: 'TOML', extensions: ['toml'] }],
-      });
-      if (filePath) {
-        await writeTextFile(filePath, tomlContent);
-      }
-    } catch (e) {
-      alert(`Failed to export forwarding config: ${e instanceof Error ? e.message : e}`);
-    }
-  }, [getForwarding]);
-
   const handleCancel = useCallback(() => {
     setView('list');
     setEditingGroup(null);
@@ -255,67 +237,95 @@ function App() {
     }
   }, [useBundledBinary]);
 
-  // Export/Import handlers
-  const handleExport = useCallback(() => {
-    setExportError(undefined);
-    setShowExportPassphrase(true);
+  // Age key resolution: returns recipient or opens dialog
+  const resolveRecipient = useCallback(async (action: PendingAction): Promise<string | null> => {
+    const keyExists = await invoke<boolean>('check_age_key_exists');
+    if (!keyExists) {
+      setPendingAction(action);
+      setAgeKeyMode('setup');
+      setAgeKeyRecipients([]);
+      setShowAgeKeyDialog(true);
+      return null;
+    }
+    const recipients = await invoke<string[]>('list_age_recipients');
+    if (recipients.length === 0) {
+      // Key file exists but no valid keys — treat as setup
+      setPendingAction(action);
+      setAgeKeyMode('setup');
+      setAgeKeyRecipients([]);
+      setShowAgeKeyDialog(true);
+      return null;
+    }
+    if (recipients.length === 1) {
+      return recipients[0];
+    }
+    // Multiple keys — show select dialog
+    setPendingAction(action);
+    setAgeKeyMode('select');
+    setAgeKeyRecipients(recipients);
+    setShowAgeKeyDialog(true);
+    return null;
   }, []);
 
-  const performExport = useCallback(async (passphrase: string | null) => {
-    setExportLoading(true);
-    setExportError(undefined);
+  // Perform the pending action with the resolved recipient
+  const performActionWithRecipient = useCallback(async (recipient: string, action: PendingAction) => {
     try {
-      const json = await invoke<string>('export_configs', { passphrase });
-      setShowExportPassphrase(false);
-
-      const filePath = await save({
-        defaultPath: 'tunnel-rs-configs.json',
-        filters: [{ name: 'JSON', extensions: ['json'] }],
-      });
-      if (filePath) {
-        await writeTextFile(filePath, json);
+      if (action.type === 'export') {
+        const json = await invoke<string>('export_configs', { recipient });
+        const filePath = await save({
+          defaultPath: 'tunnel-rs-configs.json',
+          filters: [{ name: 'JSON', extensions: ['json'] }],
+        });
+        if (filePath) {
+          await writeTextFile(filePath, json);
+        }
+      } else if (action.type === 'import') {
+        const result = await invoke<ImportResult>('import_configs', { json: action.json });
+        await Promise.all([refreshGroups(), refreshForwardings()]);
+        const messages: string[] = [];
+        if (result.groups_imported > 0) messages.push(`${result.groups_imported} server group(s) imported`);
+        if (result.forwardings_imported > 0) messages.push(`${result.forwardings_imported} forwarding(s) imported`);
+        if (result.groups_skipped > 0) messages.push(`${result.groups_skipped} server group(s) skipped`);
+        if (result.forwardings_skipped > 0) messages.push(`${result.forwardings_skipped} forwarding(s) skipped`);
+        if (result.errors.length > 0) messages.push(`Warnings: ${result.errors.join(', ')}`);
+        if (result.success) {
+          alert(`Import completed:\n${messages.join('\n')}`);
+        } else {
+          alert(`Import failed:\n${result.errors.join('\n')}`);
+        }
+      } else if (action.type === 'toml-export') {
+        const tomlContent = await invoke<string>('export_forwarding_toml', { forwardingId: action.forwardingId, recipient });
+        const forwarding = getForwarding(action.forwardingId);
+        const defaultName = forwarding ? `${forwarding.name}.toml` : 'forwarding.toml';
+        const filePath = await save({
+          defaultPath: defaultName,
+          filters: [{ name: 'TOML', extensions: ['toml'] }],
+        });
+        if (filePath) {
+          await writeTextFile(filePath, tomlContent);
+        }
       }
     } catch (e) {
-      setExportError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setExportLoading(false);
+      alert(`Operation failed: ${e instanceof Error ? e.message : e}`);
     }
-  }, []);
+  }, [refreshGroups, refreshForwardings, getForwarding]);
 
-  const handleExportSubmit = useCallback((passphrase: string) => performExport(passphrase), [performExport]);
-  const handleExportSkip = useCallback(() => performExport(null), [performExport]);
+  // Export handler
+  const handleExport = useCallback(async () => {
+    try {
+      const recipient = await resolveRecipient({ type: 'export' });
+      if (recipient) {
+        await performActionWithRecipient(recipient, { type: 'export' });
+      }
+    } catch (e) {
+      alert(`Export failed: ${e instanceof Error ? e.message : e}`);
+    }
+  }, [resolveRecipient, performActionWithRecipient]);
 
+  // Import handler
   const handleImportClick = useCallback(() => {
     importInputRef.current?.click();
   }, []);
-
-  const doImport = useCallback(async (json: string, passphrase: string | null) => {
-    const result = await invoke<ImportResult>('import_configs', { json, passphrase });
-
-    await Promise.all([refreshGroups(), refreshForwardings()]);
-
-    if (result.success) {
-      const messages: string[] = [];
-      if (result.groups_imported > 0) {
-        messages.push(`${result.groups_imported} server group(s) imported`);
-      }
-      if (result.forwardings_imported > 0) {
-        messages.push(`${result.forwardings_imported} forwarding(s) imported`);
-      }
-      if (result.groups_skipped > 0) {
-        messages.push(`${result.groups_skipped} server group(s) skipped`);
-      }
-      if (result.forwardings_skipped > 0) {
-        messages.push(`${result.forwardings_skipped} forwarding(s) skipped`);
-      }
-      if (result.errors.length > 0) {
-        messages.push(`Warnings: ${result.errors.join(', ')}`);
-      }
-      alert(`Import completed:\n${messages.join('\n')}`);
-    } else {
-      alert(`Import failed:\n${result.errors.join('\n')}`);
-    }
-  }, [refreshGroups, refreshForwardings]);
 
   const handleImportFile = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -326,33 +336,75 @@ function App() {
       const hasCreds = await invoke<boolean>('check_import_has_credentials', { json });
 
       if (hasCreds) {
-        setImportJson(json);
-        setImportError(undefined);
-        setShowImportPassphrase(true);
+        // Need age key to decrypt — check key exists
+        const keyExists = await invoke<boolean>('check_age_key_exists');
+        if (!keyExists) {
+          setPendingAction({ type: 'import', json });
+          setAgeKeyMode('setup');
+          setAgeKeyRecipients([]);
+          setShowAgeKeyDialog(true);
+        } else {
+          // Key exists, proceed directly — import doesn't need recipient selection
+          await performActionWithRecipient('', { type: 'import', json });
+        }
       } else {
-        await doImport(json, null);
+        // No credentials, import directly
+        const result = await invoke<ImportResult>('import_configs', { json });
+        await Promise.all([refreshGroups(), refreshForwardings()]);
+        const messages: string[] = [];
+        if (result.groups_imported > 0) messages.push(`${result.groups_imported} server group(s) imported`);
+        if (result.forwardings_imported > 0) messages.push(`${result.forwardings_imported} forwarding(s) imported`);
+        if (result.groups_skipped > 0) messages.push(`${result.groups_skipped} server group(s) skipped`);
+        if (result.forwardings_skipped > 0) messages.push(`${result.forwardings_skipped} forwarding(s) skipped`);
+        if (result.errors.length > 0) messages.push(`Warnings: ${result.errors.join(', ')}`);
+        if (result.success) {
+          alert(`Import completed:\n${messages.join('\n')}`);
+        } else {
+          alert(`Import failed:\n${result.errors.join('\n')}`);
+        }
       }
     } catch (e) {
       alert(`Failed to import configs: ${e instanceof Error ? e.message : e}`);
     } finally {
       e.target.value = '';
     }
-  }, [doImport]);
+  }, [refreshGroups, refreshForwardings, performActionWithRecipient]);
 
-  const handleImportSubmit = useCallback(async (passphrase: string) => {
-    if (!importJson) return;
-    setImportLoading(true);
-    setImportError(undefined);
+  // TOML export handler
+  const handleExportForwardingToml = useCallback(async (id: string) => {
     try {
-      await doImport(importJson, passphrase);
-      setShowImportPassphrase(false);
-      setImportJson(null);
+      const recipient = await resolveRecipient({ type: 'toml-export', forwardingId: id });
+      if (recipient) {
+        await performActionWithRecipient(recipient, { type: 'toml-export', forwardingId: id });
+      }
     } catch (e) {
-      setImportError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setImportLoading(false);
+      alert(`Failed to export forwarding config: ${e instanceof Error ? e.message : e}`);
     }
-  }, [importJson, doImport]);
+  }, [resolveRecipient, performActionWithRecipient]);
+
+  // Age key dialog callbacks
+  const handleAgeKeyComplete = useCallback(async (recipient: string) => {
+    setShowAgeKeyDialog(false);
+    const action = pendingAction;
+    setPendingAction(null);
+    if (action) {
+      if (action.type === 'import') {
+        // Import doesn't use recipient for encryption, just needs key to exist for decryption
+        await performActionWithRecipient(recipient, action);
+      } else {
+        await performActionWithRecipient(recipient, action);
+      }
+    }
+  }, [pendingAction, performActionWithRecipient]);
+
+  const handleAgeKeyCancel = useCallback(() => {
+    setShowAgeKeyDialog(false);
+    setPendingAction(null);
+  }, []);
+
+  const handleAgeKeyGenerate = useCallback(async () => {
+    return await invoke<string>('generate_age_key');
+  }, []);
 
   // Scroll a group card into view in the main content area
   const scrollToGroupCard = useCallback((groupId: string) => {
@@ -468,7 +520,7 @@ function App() {
                 <button
                   className="btn-small"
                   onClick={handleExport}
-                  title="Export all configs to a shareable JSON file (without auth tokens)"
+                  title="Export all configs with age-encrypted credentials"
                 >
                   Export
                 </button>
@@ -561,24 +613,13 @@ function App() {
         />
       )}
 
-      {showExportPassphrase && (
-        <PassphraseDialog
-          mode="export"
-          onSubmit={handleExportSubmit}
-          onSkip={handleExportSkip}
-          onCancel={() => setShowExportPassphrase(false)}
-          loading={exportLoading}
-          error={exportError}
-        />
-      )}
-
-      {showImportPassphrase && (
-        <PassphraseDialog
-          mode="import"
-          onSubmit={handleImportSubmit}
-          onCancel={() => { setShowImportPassphrase(false); setImportJson(null); }}
-          loading={importLoading}
-          error={importError}
+      {showAgeKeyDialog && (
+        <AgeKeyDialog
+          mode={ageKeyMode}
+          recipients={ageKeyRecipients}
+          onComplete={handleAgeKeyComplete}
+          onCancel={handleAgeKeyCancel}
+          onGenerate={handleAgeKeyGenerate}
         />
       )}
     </div>
