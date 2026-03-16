@@ -4,10 +4,8 @@ mod config;
 mod crypto;
 mod process;
 
-use config::{AppSettings, ConfigStore, ExportData, Forwarding, ImportResult, SecretsStore, ServerGroup};
-use crypto::EncryptedToken;
+use config::{AppSettings, ConfigStore, ExportData, Forwarding, ImportResult, ServerGroup};
 use process::{ProcessManager, TunnelInstanceView};
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tauri::{
@@ -25,7 +23,6 @@ static SHUTDOWN_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 /// Application state shared across commands
 pub struct AppState {
     config_store: Mutex<ConfigStore>,
-    secrets_store: SecretsStore,
     app_settings: Mutex<AppSettings>,
     process_manager: Arc<ProcessManager>,
     config_load_error: Option<String>,
@@ -33,7 +30,7 @@ pub struct AppState {
 
 impl AppState {
     fn new() -> Self {
-        let (mut config_store, config_load_error) = match ConfigStore::load() {
+        let (config_store, config_load_error) = match ConfigStore::load() {
             Ok(store) => (store, None),
             Err(e) => {
                 let error_msg = format!("Failed to load config store: {}. Using default.", e);
@@ -41,11 +38,6 @@ impl AppState {
                 (ConfigStore::default(), Some(error_msg))
             }
         };
-
-        let secrets_store = SecretsStore::new();
-
-        // Restore auth tokens from secrets store (OS keyring)
-        config_store.restore_secrets(&secrets_store);
 
         let app_settings = match AppSettings::load() {
             Ok(settings) => settings,
@@ -57,12 +49,19 @@ impl AppState {
 
         Self {
             config_store: Mutex::new(config_store),
-            secrets_store,
             app_settings: Mutex::new(app_settings),
             process_manager: Arc::new(ProcessManager::new()),
             config_load_error,
         }
     }
+}
+
+/// Get the first age recipient from the key file, or return an error.
+fn get_first_recipient() -> Result<String, String> {
+    let recipients = crypto::list_age_recipients()?;
+    recipients.into_iter().next().ok_or_else(|| {
+        "Age key required. Generate an encryption key before creating server groups.".to_string()
+    })
 }
 
 // ============================================================================
@@ -71,20 +70,50 @@ impl AppState {
 
 #[tauri::command]
 async fn list_server_groups(state: State<'_, AppState>) -> Result<Vec<ServerGroup>, String> {
-    let mut store = state.config_store.lock().await;
-    store.restore_secrets(&state.secrets_store);
+    let store = state.config_store.lock().await;
     Ok(store.list_server_groups())
 }
 
 #[tauri::command]
 async fn get_server_group(state: State<'_, AppState>, id: String) -> Result<ServerGroup, String> {
     let uuid = Uuid::parse_str(&id).map_err(|e| format!("Invalid UUID: {}", e))?;
-    let mut store = state.config_store.lock().await;
-    store.restore_secrets(&state.secrets_store);
+    let store = state.config_store.lock().await;
     store
         .get_server_group(uuid)
         .cloned()
         .ok_or_else(|| "Server group not found".to_string())
+}
+
+#[tauri::command]
+async fn get_decrypted_tokens(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<(String, String), String> {
+    let uuid = Uuid::parse_str(&id).map_err(|e| format!("Invalid UUID: {}", e))?;
+    let store = state.config_store.lock().await;
+    let group = store
+        .get_server_group(uuid)
+        .ok_or_else(|| "Server group not found".to_string())?;
+
+    let key_path = crypto::default_age_key_path()?;
+
+    let auth = match &group.auth_token {
+        Some(token) if crypto::is_age_encrypted(token) => {
+            crypto::decrypt_value(token, &key_path)?
+        }
+        Some(token) => token.clone(),
+        None => String::new(),
+    };
+
+    let alpn = match &group.alpn_token {
+        Some(token) if crypto::is_age_encrypted(token) => {
+            crypto::decrypt_value(token, &key_path)?
+        }
+        Some(token) => token.clone(),
+        None => String::new(),
+    };
+
+    Ok((auth, alpn))
 }
 
 #[tauri::command]
@@ -103,6 +132,10 @@ async fn create_server_group(
         return Err("ALPN token is required".to_string());
     }
 
+    let recipient = get_first_recipient()?;
+    let encrypted_auth = crypto::encrypt_value(&auth_token, &recipient)?;
+    let encrypted_alpn = crypto::encrypt_value(&alpn_token, &recipient)?;
+
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| format!("System time error: {}", e))?
@@ -111,23 +144,16 @@ async fn create_server_group(
     let group = ServerGroup {
         id: Uuid::new_v4(),
         name,
-        server_node_id: server_node_id.clone(),
-        auth_token: Some(auth_token.clone()),
-        alpn_token: Some(alpn_token.clone()),
+        server_node_id,
+        auth_token: Some(encrypted_auth),
+        alpn_token: Some(encrypted_alpn),
         relay_urls: relay_urls.unwrap_or_default(),
         created_at: now,
         updated_at: now,
     };
 
-    // Persist server group first to avoid orphan secrets if this fails
-    {
-        let mut store = state.config_store.lock().await;
-        store.upsert_server_group(group.clone())?;
-    }
-
-    // Save tokens to secrets store (if this fails, user can re-edit to add tokens)
-    state.secrets_store.set_token(&server_node_id, &auth_token)?;
-    state.secrets_store.set_alpn_token(&server_node_id, &alpn_token)?;
+    let mut store = state.config_store.lock().await;
+    store.upsert_server_group(group.clone())?;
 
     Ok(group)
 }
@@ -151,43 +177,33 @@ async fn update_server_group(
 
     let uuid = Uuid::parse_str(&id).map_err(|e| format!("Invalid UUID: {}", e))?;
 
-    let (created_at, relay_urls_final, old_server_node_id) = {
-        let store = state.config_store.lock().await;
-        let existing = store
-            .get_server_group(uuid)
-            .ok_or_else(|| "Server group not found".to_string())?;
-        (existing.created_at, relay_urls.unwrap_or_default(), existing.server_node_id.clone())
-    };
+    let recipient = get_first_recipient()?;
+    let encrypted_auth = crypto::encrypt_value(&auth_token, &recipient)?;
+    let encrypted_alpn = crypto::encrypt_value(&alpn_token, &recipient)?;
 
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| format!("System time error: {}", e))?
         .as_secs();
 
+    let mut store = state.config_store.lock().await;
+    let existing = store
+        .get_server_group(uuid)
+        .ok_or_else(|| "Server group not found".to_string())?;
+    let created_at = existing.created_at;
+
     let group = ServerGroup {
         id: uuid,
         name,
-        server_node_id: server_node_id.clone(),
-        auth_token: Some(auth_token.clone()),
-        alpn_token: Some(alpn_token.clone()),
-        relay_urls: relay_urls_final,
+        server_node_id,
+        auth_token: Some(encrypted_auth),
+        alpn_token: Some(encrypted_alpn),
+        relay_urls: relay_urls.unwrap_or_default(),
         created_at,
         updated_at: now,
     };
 
-    // Persist server group first to avoid orphan secrets if this fails
-    {
-        let mut store = state.config_store.lock().await;
-        store.upsert_server_group(group.clone())?;
-    }
-
-    // Update secrets store: set the new tokens first, then clean up old if node id changed
-    state.secrets_store.set_token(&server_node_id, &auth_token)?;
-    state.secrets_store.set_alpn_token(&server_node_id, &alpn_token)?;
-    if old_server_node_id != server_node_id {
-        let _ = state.secrets_store.remove_token(&old_server_node_id);
-        let _ = state.secrets_store.remove_alpn_token(&old_server_node_id);
-    }
+    store.upsert_server_group(group.clone())?;
 
     Ok(group)
 }
@@ -195,28 +211,8 @@ async fn update_server_group(
 #[tauri::command]
 async fn delete_server_group(state: State<'_, AppState>, id: String) -> Result<(), String> {
     let uuid = Uuid::parse_str(&id).map_err(|e| format!("Invalid UUID: {}", e))?;
-
-    // Get the server_node_id before deleting so we can clean up secrets
-    let server_node_id = {
-        let store = state.config_store.lock().await;
-        store
-            .get_server_group(uuid)
-            .map(|g| g.server_node_id.clone())
-    };
-
-    // Delete the server group
-    {
-        let mut store = state.config_store.lock().await;
-        store.delete_server_group(uuid)?;
-    }
-
-    // Clean up auth token and ALPN token from secrets store
-    if let Some(node_id) = server_node_id {
-        let _ = state.secrets_store.remove_token(&node_id);
-        let _ = state.secrets_store.remove_alpn_token(&node_id);
-    }
-
-    Ok(())
+    let mut store = state.config_store.lock().await;
+    store.delete_server_group(uuid)
 }
 
 // ============================================================================
@@ -262,7 +258,6 @@ async fn create_forwarding(
 
     let mut store = state.config_store.lock().await;
 
-    // Verify server group exists before creating forwarding
     if store.get_server_group(group_uuid).is_none() {
         return Err(format!("Server group '{}' not found", server_group_id));
     }
@@ -301,7 +296,6 @@ async fn update_forwarding(
 
     let mut store = state.config_store.lock().await;
 
-    // Verify server group exists before updating forwarding
     if store.get_server_group(group_uuid).is_none() {
         return Err(format!("Server group '{}' not found", server_group_id));
     }
@@ -349,46 +343,16 @@ fn get_config_load_error(state: State<'_, AppState>) -> Option<String> {
 #[tauri::command]
 async fn export_configs(
     state: State<'_, AppState>,
-    passphrase: Option<String>,
 ) -> Result<String, String> {
-    if let Some(ref pass) = passphrase {
-        crypto::validate_passphrase(pass)?;
-    }
     let store = state.config_store.lock().await;
-    let export_data = store.export();
+    let mut export_data = store.export();
 
-    // Serialize to JSON Value so we can inject encrypted tokens per server group
-    let mut value = serde_json::to_value(&export_data)
-        .map_err(|e| format!("Failed to serialize export data: {}", e))?;
-
-    if let Some(ref pass) = passphrase {
-        if let Some(groups) = value
-            .get_mut("config")
-            .and_then(|c| c.get_mut("server_groups"))
-            .and_then(|g| g.as_object_mut())
-        {
-            for (_, group) in groups.iter_mut() {
-                let node_id = group
-                    .get("server_node_id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-
-                if let Some(auth) = state.secrets_store.get_token(&node_id) {
-                    let encrypted = crypto::encrypt_token(&auth, pass)?;
-                    group["auth_token"] = serde_json::to_value(&encrypted)
-                        .map_err(|e| format!("Failed to serialize encrypted token: {}", e))?;
-                }
-                if let Some(alpn) = state.secrets_store.get_alpn_token(&node_id) {
-                    let encrypted = crypto::encrypt_token(&alpn, pass)?;
-                    group["alpn_token"] = serde_json::to_value(&encrypted)
-                        .map_err(|e| format!("Failed to serialize encrypted token: {}", e))?;
-                }
-            }
-        }
+    // Set encryption_recipient metadata from first recipient in age key file
+    if let Ok(recipient) = get_first_recipient() {
+        export_data.encryption_recipient = Some(recipient);
     }
 
-    serde_json::to_string_pretty(&value)
+    serde_json::to_string_pretty(&export_data)
         .map_err(|e| format!("Failed to serialize export data: {}", e))
 }
 
@@ -396,99 +360,35 @@ async fn export_configs(
 async fn import_configs(
     state: State<'_, AppState>,
     json: String,
-    passphrase: Option<String>,
 ) -> Result<ImportResult, String> {
-    // Parse as Value so we can extract encrypted tokens before deserializing
-    let mut value: serde_json::Value = serde_json::from_str(&json)
+    let mut export_data: ExportData = serde_json::from_str(&json)
         .map_err(|e| format!("Invalid import data: {}", e))?;
 
-    // Extract and decrypt tokens from server groups
-    let mut decrypted_tokens: HashMap<String, (Option<String>, Option<String>)> = HashMap::new();
+    // Check if we need to re-encrypt tokens for the local recipient
+    let local_recipient = get_first_recipient()?;
+    let needs_reencrypt = export_data.encryption_recipient.as_deref() != Some(&local_recipient);
 
-    if let Some(groups) = value
-        .get_mut("config")
-        .and_then(|c| c.get_mut("server_groups"))
-        .and_then(|g| g.as_object_mut())
-    {
-        for (_, group) in groups.iter_mut() {
-            let node_id = group
-                .get("server_node_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
+    if needs_reencrypt {
+        let key_path = crypto::default_age_key_path()?;
 
-            let mut auth = None;
-            let mut alpn = None;
-
-            // Check if auth_token is an encrypted object (has "alg" field)
-            if group.get("auth_token").map_or(false, |v| v.is_object()) {
-                let envelope: EncryptedToken = serde_json::from_value(group["auth_token"].clone())
-                    .map_err(|e| format!("Invalid encrypted auth_token: {}", e))?;
-                let pass = passphrase.as_deref()
-                    .ok_or_else(|| "Passphrase required to import encrypted credentials".to_string())?;
-                auth = Some(crypto::decrypt_token(&envelope, pass)?);
-                group["auth_token"] = serde_json::Value::Null;
+        for group in export_data.config.server_groups.values_mut() {
+            if let Some(ref token) = group.auth_token {
+                if crypto::is_age_encrypted(token) {
+                    let plaintext = crypto::decrypt_value(token, &key_path)?;
+                    group.auth_token = Some(crypto::encrypt_value(&plaintext, &local_recipient)?);
+                }
             }
-
-            if group.get("alpn_token").map_or(false, |v| v.is_object()) {
-                let envelope: EncryptedToken = serde_json::from_value(group["alpn_token"].clone())
-                    .map_err(|e| format!("Invalid encrypted alpn_token: {}", e))?;
-                let pass = passphrase.as_deref()
-                    .ok_or_else(|| "Passphrase required to import encrypted credentials".to_string())?;
-                alpn = Some(crypto::decrypt_token(&envelope, pass)?);
-                group["alpn_token"] = serde_json::Value::Null;
-            }
-
-            if auth.is_some() || alpn.is_some() {
-                decrypted_tokens.insert(node_id, (auth, alpn));
+            if let Some(ref token) = group.alpn_token {
+                if crypto::is_age_encrypted(token) {
+                    let plaintext = crypto::decrypt_value(token, &key_path)?;
+                    group.alpn_token = Some(crypto::encrypt_value(&plaintext, &local_recipient)?);
+                }
             }
         }
     }
-
-    // Now deserialize the cleaned JSON into ExportData
-    let export_data: ExportData = serde_json::from_value(value)
-        .map_err(|e| format!("Invalid import data: {}", e))?;
 
     let mut store = state.config_store.lock().await;
-    let result = store.import(export_data);
-
-    // Only persist tokens if the import succeeded (avoids orphan secrets on
-    // version mismatch or save failure)
-    if result.success {
-        for (node_id, (auth, alpn)) in decrypted_tokens {
-            if let Some(a) = auth {
-                state.secrets_store.set_token(&node_id, &a)?;
-            }
-            if let Some(a) = alpn {
-                state.secrets_store.set_alpn_token(&node_id, &a)?;
-            }
-        }
-
-        // Rehydrate in-memory auth tokens from secrets store after import
-        store.restore_secrets(&state.secrets_store);
-    }
-
-    Ok(result)
-}
-
-#[tauri::command]
-fn check_import_has_credentials(json: String) -> Result<bool, String> {
-    let value: serde_json::Value = serde_json::from_str(&json)
-        .map_err(|e| format!("Invalid JSON: {}", e))?;
-    if let Some(groups) = value
-        .get("config")
-        .and_then(|c| c.get("server_groups"))
-        .and_then(|g| g.as_object())
-    {
-        for (_, group) in groups {
-            if group.get("auth_token").map_or(false, |v| v.is_object())
-                || group.get("alpn_token").map_or(false, |v| v.is_object())
-            {
-                return Ok(true);
-            }
-        }
-    }
-    Ok(false)
+    Ok(store.import(export_data))
 }
 
 // ============================================================================
@@ -499,11 +399,11 @@ fn check_import_has_credentials(json: String) -> Result<bool, String> {
 async fn export_forwarding_toml(
     state: State<'_, AppState>,
     forwarding_id: String,
+    recipient: String,
 ) -> Result<String, String> {
     let uuid = Uuid::parse_str(&forwarding_id).map_err(|e| format!("Invalid UUID: {}", e))?;
 
-    let mut store = state.config_store.lock().await;
-    store.restore_secrets(&state.secrets_store);
+    let store = state.config_store.lock().await;
 
     let forwarding = store
         .get_forwarding(uuid)
@@ -516,8 +416,51 @@ async fn export_forwarding_toml(
         .ok_or_else(|| "Server group not found".to_string())?;
     let group_name = group.name.clone();
 
-    let config = store.build_tunnel_config(uuid)?;
+    let mut config = store.build_tunnel_config(uuid)?;
+
+    // Decrypt ageenc: tokens, then re-encrypt with the specified recipient
+    let key_path = crypto::default_age_key_path()?;
+
+    if let Some(ref auth) = config.iroh.auth_token {
+        if crypto::is_age_encrypted(auth) {
+            let plaintext = crypto::decrypt_value(auth, &key_path)?;
+            config.iroh.auth_token = Some(crypto::encrypt_value(&plaintext, &recipient)?);
+        }
+    }
+    if let Some(ref alpn) = config.iroh.alpn_token {
+        if crypto::is_age_encrypted(alpn) {
+            let plaintext = crypto::decrypt_value(alpn, &key_path)?;
+            config.iroh.alpn_token = Some(crypto::encrypt_value(&plaintext, &recipient)?);
+        }
+    }
+
+    config.iroh.encryption_recipient = Some(recipient);
+
     Ok(config.to_commented_toml(&forwarding_name, &group_name))
+}
+
+// ============================================================================
+// Age Key Commands
+// ============================================================================
+
+#[tauri::command]
+fn check_age_key_exists() -> Result<bool, String> {
+    crypto::age_key_exists()
+}
+
+#[tauri::command]
+fn list_age_recipients() -> Result<Vec<String>, String> {
+    crypto::list_age_recipients()
+}
+
+#[tauri::command]
+fn generate_age_key() -> Result<String, String> {
+    crypto::generate_age_key()
+}
+
+#[tauri::command]
+fn get_age_key_path() -> Result<String, String> {
+    crypto::default_age_key_path().map(|p| p.to_string_lossy().to_string())
 }
 
 // ============================================================================
@@ -542,7 +485,6 @@ async fn get_instance(
 async fn start_tunnel(state: State<'_, AppState>, forwarding_id: String) -> Result<(), String> {
     let uuid = Uuid::parse_str(&forwarding_id).map_err(|e| format!("Invalid UUID: {}", e))?;
 
-    // Get forwarding, server group, and build config
     let (forwarding_name, server_group_name, config) = {
         let store = state.config_store.lock().await;
 
@@ -556,7 +498,6 @@ async fn start_tunnel(state: State<'_, AppState>, forwarding_id: String) -> Resu
             .ok_or_else(|| "Server group not found".to_string())?;
         let server_group_name = group.name.clone();
 
-        // Require auth token and ALPN token to start tunnel
         if group.auth_token.is_none() {
             return Err(format!(
                 "Auth token is required. Please edit server group '{}' and add an auth token.",
@@ -570,7 +511,20 @@ async fn start_tunnel(state: State<'_, AppState>, forwarding_id: String) -> Resu
             ));
         }
 
-        let config = store.build_tunnel_config(uuid)?;
+        let mut config = store.build_tunnel_config(uuid)?;
+
+        // Decrypt ageenc: tokens for the tunnel process
+        let key_path = crypto::default_age_key_path()?;
+        if let Some(ref auth) = config.iroh.auth_token {
+            if crypto::is_age_encrypted(auth) {
+                config.iroh.auth_token = Some(crypto::decrypt_value(auth, &key_path)?);
+            }
+        }
+        if let Some(ref alpn) = config.iroh.alpn_token {
+            if crypto::is_age_encrypted(alpn) {
+                config.iroh.alpn_token = Some(crypto::decrypt_value(alpn, &key_path)?);
+            }
+        }
 
         (forwarding_name, server_group_name, config)
     };
@@ -598,13 +552,11 @@ async fn set_custom_binary_path(
     state: State<'_, AppState>,
     path: Option<String>,
 ) -> Result<(), String> {
-    // Persist to settings first to ensure consistency
     {
         let mut settings = state.app_settings.lock().await;
         settings.binary_path = path.clone();
         settings.save()?;
     }
-    // Only update process manager if persistence succeeded
     state.process_manager.set_custom_binary_path(path).await;
     Ok(())
 }
@@ -629,7 +581,6 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&show_item, &separator, &quit_item])?;
 
-    // Use high-contrast tray icon for macOS menu bar (44x44 for retina)
     let tray_icon = tauri::image::Image::from_bytes(include_bytes!("../icons/tray@2x.png"))?;
 
     let _tray = TrayIconBuilder::new()
@@ -640,12 +591,8 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .on_menu_event(|app, event| match event.id.as_ref() {
             "show" => {
                 if let Some(window) = app.get_webview_window("main") {
-                    if let Err(e) = window.show() {
-                        tracing::trace!("failed to show main window: {}", e);
-                    }
-                    if let Err(e) = window.set_focus() {
-                        tracing::trace!("failed to set focus on main window: {}", e);
-                    }
+                    let _ = window.show();
+                    let _ = window.set_focus();
                 }
             }
             "quit" => {
@@ -662,12 +609,8 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             {
                 let app = tray.app_handle();
                 if let Some(window) = app.get_webview_window("main") {
-                    if let Err(e) = window.show() {
-                        tracing::trace!("failed to show main window: {}", e);
-                    }
-                    if let Err(e) = window.set_focus() {
-                        tracing::trace!("failed to set focus on main window: {}", e);
-                    }
+                    let _ = window.show();
+                    let _ = window.set_focus();
                 }
             }
         })
@@ -692,6 +635,7 @@ pub fn run() {
             // Server Group commands
             list_server_groups,
             get_server_group,
+            get_decrypted_tokens,
             create_server_group,
             update_server_group,
             delete_server_group,
@@ -706,8 +650,12 @@ pub fn run() {
             // Export/Import commands
             export_configs,
             import_configs,
-            check_import_has_credentials,
             export_forwarding_toml,
+            // Age key commands
+            check_age_key_exists,
+            list_age_recipients,
+            generate_age_key,
+            get_age_key_path,
             // Process commands
             list_instances,
             get_instance,
@@ -719,10 +667,8 @@ pub fn run() {
             get_binary_version,
         ])
         .setup(|app| {
-            // Set up system tray
             setup_tray(app)?;
 
-            // Get main window and set up close handler to hide instead of quit
             if let Some(window) = app.get_webview_window("main") {
                 let window_clone = window.clone();
                 window.on_window_event(move |event| {
@@ -733,14 +679,11 @@ pub fn run() {
                 });
             }
 
-            // Apply saved settings and emit startup events
             if let Some(state) = app.try_state::<AppState>() {
-                // Set app handle for sidecar spawning and apply saved custom binary path
                 let app_handle = app.handle().clone();
                 tauri::async_runtime::block_on(async {
                     state.process_manager.set_app_handle(app_handle).await;
 
-                    // Apply saved custom binary path if set
                     let binary_path = state.app_settings.lock().await.binary_path.clone();
                     if let Some(path) = binary_path {
                         state
@@ -750,7 +693,6 @@ pub fn run() {
                     }
                 });
 
-                // Emit config load error event if there was an error during startup
                 if let Some(ref error) = state.config_load_error {
                     let _ = app.emit("config-load-failure", error.clone());
                 }
@@ -762,22 +704,17 @@ pub fn run() {
 
     app.run(|app_handle, event| {
         if let tauri::RunEvent::ExitRequested { api, .. } = event {
-            // Check if shutdown is already in progress (compare_exchange returns Ok if we set it)
             if SHUTDOWN_IN_PROGRESS
                 .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
                 .is_err()
             {
-                // Shutdown already in progress — don't call prevent_exit() since the
-                // channel may already be dropped (causes panic in tauri's unwrap).
                 return;
             }
 
-            // Prevent immediate exit to allow graceful shutdown
             api.prevent_exit();
 
             let app_handle = app_handle.clone();
             tauri::async_runtime::spawn(async move {
-                // Stop all running tunnels with a timeout
                 if let Some(state) = app_handle.try_state::<AppState>() {
                     const SHUTDOWN_TIMEOUT: std::time::Duration =
                         std::time::Duration::from_secs(5);
@@ -796,10 +733,8 @@ pub fn run() {
                         }
                     }
 
-                    // Force kill any remaining processes to ensure no orphans
                     state.process_manager.force_kill_all().await;
                 }
-                // Force exit without re-triggering ExitRequested
                 std::process::exit(0);
             });
         }
