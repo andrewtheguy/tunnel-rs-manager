@@ -1,9 +1,9 @@
 // Sidebar component showing hierarchical server groups and forwardings
 
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, useEffect } from 'react';
+import { getVersion } from '@tauri-apps/api/app';
 import type { ServerGroup, Forwarding, TunnelInstance } from '../types';
 import { StatusBadge } from './StatusBadge';
-import { version } from '../../package.json';
 import './Sidebar.css';
 
 interface SidebarProps {
@@ -28,6 +28,11 @@ export function Sidebar({
     onAddGroup,
 }: SidebarProps) {
     const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+    const [version, setVersion] = useState<string>('');
+
+    useEffect(() => {
+        getVersion().then(setVersion);
+    }, []);
 
     const instancesByForwardingId = useMemo(() => new Map(
         instances.map(i => [i.forwarding_id, i])
