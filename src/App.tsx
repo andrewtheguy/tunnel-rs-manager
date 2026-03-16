@@ -2,7 +2,7 @@ import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { save } from '@tauri-apps/plugin-dialog';
 import { writeTextFile } from '@tauri-apps/plugin-fs';
-import { Sidebar, ServerGroupCard, ServerGroupForm, ForwardingForm, ConfirmDialog, PassphraseDialog } from './components';
+import { Sidebar, ServerGroupCard, ServerGroupForm, ForwardingForm, ConfirmDialog, AgeKeyDialog } from './components';
 import { useServerGroups, useForwardings, useTunnelInstances, useBinaryPath } from './hooks';
 import type { ServerGroup, Forwarding, ServerGroupFormData, ForwardingFormData, ImportResult } from './types';
 import { serverGroupToForm, forwardingToForm } from './types';
@@ -10,17 +10,19 @@ import './App.css';
 
 type View = 'list' | 'create-group' | 'edit-group' | 'create-forwarding' | 'edit-forwarding';
 
+type PendingAction =
+  | { type: 'toml-export'; forwardingId: string }
+  | { type: 'create-group'; form: ServerGroupFormData }
+  | { type: 'edit-group'; form: ServerGroupFormData };
+
 function App() {
   const { serverGroups, loading: groupsLoading, createServerGroup, updateServerGroup, deleteServerGroup, getServerGroup, refresh: refreshGroups } = useServerGroups();
   const { forwardings, loading: forwardingsLoading, createForwarding, updateForwarding, deleteForwarding, getForwardingsByGroup, getForwarding, refresh: refreshForwardings } = useForwardings();
   const { instances, startTunnel, stopTunnel, loading: instancesLoading } = useTunnelInstances();
   const { customBinaryPath, isUsingBundled, binaryVersion, selectCustomBinaryPath, useBundledBinary } = useBinaryPath();
 
-  // Hidden file input for import
   const importInputRef = useRef<HTMLInputElement>(null);
-  // Ref to main content for scroll restoration
   const mainContentRef = useRef<HTMLElement>(null);
-  // Saved scroll position when leaving list view
   const savedScrollPos = useRef(0);
 
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
@@ -32,19 +34,15 @@ function App() {
   const [pendingDelete, setPendingDelete] = useState<{ type: 'group' | 'forwarding'; id: string; name: string } | null>(null);
   const [deleting, setDeleting] = useState(false);
 
-  // Passphrase dialog state
-  const [showExportPassphrase, setShowExportPassphrase] = useState(false);
-  const [showImportPassphrase, setShowImportPassphrase] = useState(false);
-  const [importJson, setImportJson] = useState<string | null>(null);
-  const [exportLoading, setExportLoading] = useState(false);
-  const [importLoading, setImportLoading] = useState(false);
-  const [exportError, setExportError] = useState<string | undefined>();
-  const [importError, setImportError] = useState<string | undefined>();
+  // Age key dialog state
+  const [showAgeKeyDialog, setShowAgeKeyDialog] = useState(false);
+  const [ageKeyMode, setAgeKeyMode] = useState<'setup' | 'select'>('setup');
+  const [ageKeyRecipients, setAgeKeyRecipients] = useState<string[]>([]);
+  const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
 
   // Restore scroll position when returning to list view
   useEffect(() => {
     if (view === 'list' && mainContentRef.current && savedScrollPos.current > 0) {
-      // Use requestAnimationFrame to ensure DOM is fully rendered before restoring scroll
       const rafId = requestAnimationFrame(() => {
         if (mainContentRef.current) {
           mainContentRef.current.scrollTop = savedScrollPos.current;
@@ -54,47 +52,107 @@ function App() {
     }
   }, [view]);
 
-  // Save scroll position before leaving list view
   const saveScrollPosition = useCallback(() => {
     if (mainContentRef.current) {
       savedScrollPos.current = mainContentRef.current.scrollTop;
     }
   }, []);
 
-  // Handlers for Server Groups
+  // ── Age key helpers ──
+
+  const showAgeKeySetup = useCallback((action: PendingAction) => {
+    setPendingAction(action);
+    setAgeKeyMode('setup');
+    setAgeKeyRecipients([]);
+    setShowAgeKeyDialog(true);
+  }, []);
+
+  const resolveRecipientForToml = useCallback(async (action: PendingAction): Promise<string | null> => {
+    const keyExists = await invoke<boolean>('check_age_key_exists');
+    if (!keyExists) {
+      showAgeKeySetup(action);
+      return null;
+    }
+    const recipients = await invoke<string[]>('list_age_recipients');
+    if (recipients.length === 0) {
+      showAgeKeySetup(action);
+      return null;
+    }
+    if (recipients.length === 1) {
+      return recipients[0];
+    }
+    setPendingAction(action);
+    setAgeKeyMode('select');
+    setAgeKeyRecipients(recipients);
+    setShowAgeKeyDialog(true);
+    return null;
+  }, [showAgeKeySetup]);
+
+  const handleAgeKeyGenerate = useCallback(async () => {
+    return await invoke<string>('generate_age_key');
+  }, []);
+
+  const handleAgeKeyCancel = useCallback(() => {
+    setShowAgeKeyDialog(false);
+    setPendingAction(null);
+  }, []);
+
+  // ── Server Group handlers ──
+
   const handleAddGroup = useCallback(() => {
     saveScrollPosition();
     setView('create-group');
     setEditingGroup(null);
   }, [saveScrollPosition]);
 
-  const handleEditGroup = useCallback((group: ServerGroup) => {
+  const handleEditGroup = useCallback(async (group: ServerGroup) => {
     saveScrollPosition();
-    setEditingGroup(group);
+    try {
+      const [auth, alpn] = await invoke<[string, string]>('get_decrypted_tokens', { id: group.id });
+      setEditingGroup({ ...group, auth_token: auth, alpn_token: alpn });
+    } catch {
+      setEditingGroup({ ...group, auth_token: '', alpn_token: '' });
+    }
     setView('edit-group');
   }, [saveScrollPosition]);
 
-  const handleCreateGroupSubmit = useCallback(async (form: ServerGroupFormData) => {
+  const performCreateGroup = useCallback(async (form: ServerGroupFormData) => {
     try {
       await createServerGroup(form);
       setView('list');
     } catch (e) {
-      alert(`Failed to create server group: ${e instanceof Error ? e.message : e}`);
-    }
-  }, [createServerGroup]);
-
-  const handleEditGroupSubmit = useCallback(async (form: ServerGroupFormData) => {
-    try {
-      if (!editingGroup) {
-        throw new Error('No editing group selected');
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg.includes('Age key required')) {
+        showAgeKeySetup({ type: 'create-group', form });
+      } else {
+        alert(`Failed to create server group: ${msg}`);
       }
+    }
+  }, [createServerGroup, showAgeKeySetup]);
+
+  const performEditGroup = useCallback(async (form: ServerGroupFormData) => {
+    try {
+      if (!editingGroup) throw new Error('No editing group selected');
       await updateServerGroup(editingGroup.id, form);
       setView('list');
       setEditingGroup(null);
     } catch (e) {
-      alert(`Failed to update server group: ${e instanceof Error ? e.message : e}`);
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg.includes('Age key required')) {
+        showAgeKeySetup({ type: 'edit-group', form });
+      } else {
+        alert(`Failed to update server group: ${msg}`);
+      }
     }
-  }, [editingGroup, updateServerGroup]);
+  }, [editingGroup, updateServerGroup, showAgeKeySetup]);
+
+  const handleCreateGroupSubmit = useCallback(async (form: ServerGroupFormData) => {
+    await performCreateGroup(form);
+  }, [performCreateGroup]);
+
+  const handleEditGroupSubmit = useCallback(async (form: ServerGroupFormData) => {
+    await performEditGroup(form);
+  }, [performEditGroup]);
 
   const handleDeleteGroup = useCallback((id: string) => {
     const group = getServerGroup(id);
@@ -113,7 +171,8 @@ function App() {
     }
   }, [deleteServerGroup, selectedGroupId]);
 
-  // Handlers for Forwardings
+  // ── Forwarding handlers ──
+
   const handleAddForwarding = useCallback((groupId: string) => {
     saveScrollPosition();
     setAddForwardingToGroupId(groupId);
@@ -130,9 +189,7 @@ function App() {
 
   const handleCreateForwardingSubmit = useCallback(async (form: ForwardingFormData) => {
     try {
-      if (!addForwardingToGroupId) {
-        throw new Error('No server group selected');
-      }
+      if (!addForwardingToGroupId) throw new Error('No server group selected');
       await createForwarding(addForwardingToGroupId, form);
       setView('list');
       setAddForwardingToGroupId(null);
@@ -143,9 +200,7 @@ function App() {
 
   const handleEditForwardingSubmit = useCallback(async (form: ForwardingFormData) => {
     try {
-      if (!editingForwarding) {
-        throw new Error('No editing forwarding selected');
-      }
+      if (!editingForwarding) throw new Error('No editing forwarding selected');
       await updateForwarding(editingForwarding.id, editingForwarding.server_group_id, form);
       setView('list');
       setEditingForwarding(null);
@@ -156,7 +211,6 @@ function App() {
   }, [editingForwarding, updateForwarding]);
 
   const handleDeleteForwarding = useCallback((id: string) => {
-    // Check if running
     const instance = instances.find(i => i.forwarding_id === id);
     if (instance && (instance.status === 'running' || instance.status === 'starting' || instance.status === 'reconnecting')) {
       alert('Cannot delete a running forwarding. Stop it first.');
@@ -196,7 +250,8 @@ function App() {
     setPendingDelete(null);
   }, []);
 
-  // Handlers for Tunnels
+  // ── Tunnel handlers ──
+
   const handleStartForwarding = useCallback(async (id: string) => {
     try {
       await startTunnel(id);
@@ -213,24 +268,6 @@ function App() {
     }
   }, [stopTunnel]);
 
-  const handleExportForwardingToml = useCallback(async (id: string) => {
-    try {
-      const tomlContent = await invoke<string>('export_forwarding_toml', { forwardingId: id });
-      const forwarding = getForwarding(id);
-      const defaultName = forwarding ? `${forwarding.name}.toml` : 'forwarding.toml';
-
-      const filePath = await save({
-        defaultPath: defaultName,
-        filters: [{ name: 'TOML', extensions: ['toml'] }],
-      });
-      if (filePath) {
-        await writeTextFile(filePath, tomlContent);
-      }
-    } catch (e) {
-      alert(`Failed to export forwarding config: ${e instanceof Error ? e.message : e}`);
-    }
-  }, [getForwarding]);
-
   const handleCancel = useCallback(() => {
     setView('list');
     setEditingGroup(null);
@@ -238,7 +275,8 @@ function App() {
     setAddForwardingToGroupId(null);
   }, []);
 
-  // Binary path handlers
+  // ── Binary path handlers ──
+
   const handleSelectCustomBinaryPath = useCallback(async () => {
     try {
       await selectCustomBinaryPath();
@@ -255,19 +293,11 @@ function App() {
     }
   }, [useBundledBinary]);
 
-  // Export/Import handlers
-  const handleExport = useCallback(() => {
-    setExportError(undefined);
-    setShowExportPassphrase(true);
-  }, []);
+  // ── Export/Import handlers ──
 
-  const performExport = useCallback(async (passphrase: string | null) => {
-    setExportLoading(true);
-    setExportError(undefined);
+  const handleExport = useCallback(async () => {
     try {
-      const json = await invoke<string>('export_configs', { passphrase });
-      setShowExportPassphrase(false);
-
+      const json = await invoke<string>('export_configs');
       const filePath = await save({
         defaultPath: 'tunnel-rs-configs.json',
         filters: [{ name: 'JSON', extensions: ['json'] }],
@@ -276,46 +306,13 @@ function App() {
         await writeTextFile(filePath, json);
       }
     } catch (e) {
-      setExportError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setExportLoading(false);
+      alert(`Export failed: ${e instanceof Error ? e.message : e}`);
     }
   }, []);
-
-  const handleExportSubmit = useCallback((passphrase: string) => performExport(passphrase), [performExport]);
-  const handleExportSkip = useCallback(() => performExport(null), [performExport]);
 
   const handleImportClick = useCallback(() => {
     importInputRef.current?.click();
   }, []);
-
-  const doImport = useCallback(async (json: string, passphrase: string | null) => {
-    const result = await invoke<ImportResult>('import_configs', { json, passphrase });
-
-    await Promise.all([refreshGroups(), refreshForwardings()]);
-
-    if (result.success) {
-      const messages: string[] = [];
-      if (result.groups_imported > 0) {
-        messages.push(`${result.groups_imported} server group(s) imported`);
-      }
-      if (result.forwardings_imported > 0) {
-        messages.push(`${result.forwardings_imported} forwarding(s) imported`);
-      }
-      if (result.groups_skipped > 0) {
-        messages.push(`${result.groups_skipped} server group(s) skipped`);
-      }
-      if (result.forwardings_skipped > 0) {
-        messages.push(`${result.forwardings_skipped} forwarding(s) skipped`);
-      }
-      if (result.errors.length > 0) {
-        messages.push(`Warnings: ${result.errors.join(', ')}`);
-      }
-      alert(`Import completed:\n${messages.join('\n')}`);
-    } else {
-      alert(`Import failed:\n${result.errors.join('\n')}`);
-    }
-  }, [refreshGroups, refreshForwardings]);
 
   const handleImportFile = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -323,38 +320,88 @@ function App() {
 
     try {
       const json = await file.text();
-      const hasCreds = await invoke<boolean>('check_import_has_credentials', { json });
-
-      if (hasCreds) {
-        setImportJson(json);
-        setImportError(undefined);
-        setShowImportPassphrase(true);
+      const result = await invoke<ImportResult>('import_configs', { json });
+      await Promise.all([refreshGroups(), refreshForwardings()]);
+      const messages: string[] = [];
+      if (result.groups_imported > 0) messages.push(`${result.groups_imported} server group(s) imported`);
+      if (result.forwardings_imported > 0) messages.push(`${result.forwardings_imported} forwarding(s) imported`);
+      if (result.groups_skipped > 0) messages.push(`${result.groups_skipped} server group(s) skipped`);
+      if (result.forwardings_skipped > 0) messages.push(`${result.forwardings_skipped} forwarding(s) skipped`);
+      if (result.errors.length > 0) messages.push(`Warnings: ${result.errors.join(', ')}`);
+      if (result.success) {
+        alert(`Import completed:\n${messages.join('\n')}`);
       } else {
-        await doImport(json, null);
+        alert(`Import failed:\n${result.errors.join('\n')}`);
       }
     } catch (e) {
       alert(`Failed to import configs: ${e instanceof Error ? e.message : e}`);
     } finally {
       e.target.value = '';
     }
-  }, [doImport]);
+  }, [refreshGroups, refreshForwardings]);
 
-  const handleImportSubmit = useCallback(async (passphrase: string) => {
-    if (!importJson) return;
-    setImportLoading(true);
-    setImportError(undefined);
-    try {
-      await doImport(importJson, passphrase);
-      setShowImportPassphrase(false);
-      setImportJson(null);
-    } catch (e) {
-      setImportError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setImportLoading(false);
+  // ── TOML export ──
+
+  const exportTomlToFile = useCallback(async (forwardingId: string, recipient: string) => {
+    const tomlContent = await invoke<string>('export_forwarding_toml', { forwardingId, recipient });
+    const forwarding = getForwarding(forwardingId);
+    const defaultName = forwarding ? `${forwarding.name}.toml` : 'forwarding.toml';
+    const filePath = await save({
+      defaultPath: defaultName,
+      filters: [{ name: 'TOML', extensions: ['toml'] }],
+    });
+    if (filePath) {
+      await writeTextFile(filePath, tomlContent);
     }
-  }, [importJson, doImport]);
+  }, [getForwarding]);
 
-  // Scroll a group card into view in the main content area
+  const handleExportForwardingToml = useCallback(async (id: string) => {
+    try {
+      const action: PendingAction = { type: 'toml-export', forwardingId: id };
+      const recipient = await resolveRecipientForToml(action);
+      if (recipient) {
+        await exportTomlToFile(id, recipient);
+      }
+    } catch (e) {
+      alert(`Failed to export forwarding config: ${e instanceof Error ? e.message : e}`);
+    }
+  }, [resolveRecipientForToml, exportTomlToFile]);
+
+  // ── Age key dialog completion ──
+
+  const handleAgeKeyComplete = useCallback(async (recipient: string) => {
+    setShowAgeKeyDialog(false);
+    const action = pendingAction;
+    setPendingAction(null);
+    if (!action) return;
+
+    try {
+      if (action.type === 'toml-export') {
+        await exportTomlToFile(action.forwardingId, recipient);
+      } else if (action.type === 'create-group') {
+        try {
+          await createServerGroup(action.form);
+          setView('list');
+        } catch (e) {
+          alert(`Failed to create server group: ${e instanceof Error ? e.message : e}`);
+        }
+      } else if (action.type === 'edit-group') {
+        try {
+          if (!editingGroup) throw new Error('No editing group selected');
+          await updateServerGroup(editingGroup.id, action.form);
+          setView('list');
+          setEditingGroup(null);
+        } catch (e) {
+          alert(`Failed to update server group: ${e instanceof Error ? e.message : e}`);
+        }
+      }
+    } catch (e) {
+      alert(`Operation failed: ${e instanceof Error ? e.message : e}`);
+    }
+  }, [pendingAction, exportTomlToFile, createServerGroup, updateServerGroup, editingGroup]);
+
+  // ── Scroll/selection ──
+
   const scrollToGroupCard = useCallback((groupId: string) => {
     if (view !== 'list') return;
     requestAnimationFrame(() => {
@@ -363,7 +410,6 @@ function App() {
     });
   }, [view]);
 
-  // Sidebar selection handlers
   const handleSelectGroup = useCallback((id: string) => {
     setSelectedGroupId(id);
     setSelectedForwardingId(null);
@@ -379,7 +425,8 @@ function App() {
     }
   }, [getForwarding, scrollToGroupCard]);
 
-  // Memoized form data
+  // ── Memoized data ──
+
   const editingGroupFormData = useMemo(
     () => editingGroup ? serverGroupToForm(editingGroup) : undefined,
     [editingGroup]
@@ -396,7 +443,6 @@ function App() {
     return group?.name ?? '';
   }, [addForwardingToGroupId, getServerGroup]);
 
-  // Stats
   const runningCount = instances.filter(i => i.status === 'running' || i.status === 'starting' || i.status === 'reconnecting').length;
 
   return (
@@ -468,7 +514,7 @@ function App() {
                 <button
                   className="btn-small"
                   onClick={handleExport}
-                  title="Export all configs to a shareable JSON file (without auth tokens)"
+                  title="Export all configs with age-encrypted credentials"
                 >
                   Export
                 </button>
@@ -561,24 +607,13 @@ function App() {
         />
       )}
 
-      {showExportPassphrase && (
-        <PassphraseDialog
-          mode="export"
-          onSubmit={handleExportSubmit}
-          onSkip={handleExportSkip}
-          onCancel={() => setShowExportPassphrase(false)}
-          loading={exportLoading}
-          error={exportError}
-        />
-      )}
-
-      {showImportPassphrase && (
-        <PassphraseDialog
-          mode="import"
-          onSubmit={handleImportSubmit}
-          onCancel={() => { setShowImportPassphrase(false); setImportJson(null); }}
-          loading={importLoading}
-          error={importError}
+      {showAgeKeyDialog && (
+        <AgeKeyDialog
+          mode={ageKeyMode}
+          recipients={ageKeyRecipients}
+          onComplete={handleAgeKeyComplete}
+          onCancel={handleAgeKeyCancel}
+          onGenerate={handleAgeKeyGenerate}
         />
       )}
     </div>

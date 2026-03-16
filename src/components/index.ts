@@ -8,4 +8,4 @@ export { ForwardingForm } from './ForwardingForm';
 export { ServerGroupCard } from './ServerGroupCard';
 export { ForwardingItem } from './ForwardingItem';
 export { ConfirmDialog } from './ConfirmDialog';
-export { PassphraseDialog } from './PassphraseDialog';
+export { AgeKeyDialog } from './AgeKeyDialog';

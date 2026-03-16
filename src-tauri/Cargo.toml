@@ -1,6 +1,6 @@
 [package]
 name = "tunnel-rs-manager"
-version = "0.0.36"
+version = "0.0.37"
 description = "A desktop app to manage tunnel-rs client instances"
 authors = ["you"]
 edition = "2021"
@@ -24,9 +24,10 @@ tokio = { version = "1", features = ["process", "io-util", "sync", "macros", "ti
 uuid = { version = "1", features = ["v4", "serde"] }
 dirs = "5"
 tracing = "0.1"
-aes-gcm = "0.10"
-argon2 = "0.5"
+age = { version = "0.11", default-features = false }
+jiff = "0.2"
 base64 = "0.22"
-rand = "0.8"
-keyring = { version = "3", features = ["apple-native", "windows-native", "linux-native"] }
 toml = "0.8"
+
+[dev-dependencies]
+tempfile = "3"
