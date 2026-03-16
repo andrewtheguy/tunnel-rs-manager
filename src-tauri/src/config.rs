@@ -48,6 +48,8 @@ pub struct IrohConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub alpn_token: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub alpn_token_file: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub transport: Option<TransportConfig>,
 }
 
@@ -75,6 +77,7 @@ impl TunnelClientConfig {
                 auth_token: None,
                 auth_token_file: None,
                 alpn_token: None,
+                alpn_token_file: None,
                 transport: None,
             },
         }
@@ -142,6 +145,11 @@ impl TunnelClientConfig {
         if let Some(ref v) = self.iroh.alpn_token {
             out.push_str("\n# ALPN protocol token (secret — do not share)\n");
             out.push_str(&format!("alpn_token = {}\n", toml::Value::String(v.clone())));
+        }
+
+        if let Some(ref v) = self.iroh.alpn_token_file {
+            out.push_str("\n# Path to file containing the ALPN token\n");
+            out.push_str(&format!("alpn_token_file = {}\n", toml::Value::String(v.clone())));
         }
 
         if let Some(ref transport) = self.iroh.transport {

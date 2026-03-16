@@ -516,7 +516,10 @@ async fn export_forwarding_toml(
         .ok_or_else(|| "Server group not found".to_string())?;
     let group_name = group.name.clone();
 
-    let config = store.build_tunnel_config(uuid)?;
+    let mut config = store.build_tunnel_config(uuid)?;
+    // Replace inline secrets with file path placeholders
+    config.iroh.auth_token_file = config.iroh.auth_token.take().map(|_| "/path/to/auth_token_file".to_string());
+    config.iroh.alpn_token_file = config.iroh.alpn_token.take().map(|_| "/path/to/alpn_token_file".to_string());
     Ok(config.to_commented_toml(&forwarding_name, &group_name))
 }
 
