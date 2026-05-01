@@ -42,6 +42,30 @@ jobs:
           releaseName: 'tunnel-rs-manager v__VERSION__'
           releaseBody: 'See assets below to download and install.'
           releaseDraft: true
-          prerelease: false
+          prerelease: ${{ github.ref_name != 'main' }}
           tauriScript: bun run tauri
           args: ${{ matrix.args }}
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: read version
+        id: version
+        run: echo "version=$(jq -r .version package.json)" >> "$GITHUB_OUTPUT"
+
+      - name: publish draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: v${{ steps.version.outputs.version }}
+        run: |
+          NOTES=$(gh api -X POST "/repos/$GITHUB_REPOSITORY/releases/generate-notes" \
+            -f tag_name="$TAG" --jq .body)
+          gh release edit "$TAG" \
+            --draft=false \
+            --notes "$NOTES" \
+            --repo "$GITHUB_REPOSITORY"
