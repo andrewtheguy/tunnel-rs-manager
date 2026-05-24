@@ -1,6 +1,6 @@
 [package]
 name = "tunnel-rs-manager"
-version = "0.0.40"
+version = "0.0.41"
 description = "A desktop app to manage tunnel-rs client instances"
 authors = ["you"]
 edition = "2021"
@@ -24,10 +24,24 @@ tokio = { version = "1", features = ["process", "io-util", "sync", "macros", "ti
 uuid = { version = "1", features = ["v4", "serde"] }
 dirs = "5"
 tracing = "0.1"
-age = { version = "0.11", default-features = false }
-jiff = "0.2"
+aes-gcm = "0.10"
+scrypt = { version = "0.12", default-features = false }
+hmac = "0.13"
+sha2 = "0.11"
+rand = "0.10"
+subtle = "2"
 base64 = "0.22"
 toml = "0.8"
+keyring-core = "1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+apple-native-keyring-store = { version = "1", features = ["keychain"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+dbus-secret-service-keyring-store = { version = "1", features = ["crypto-rust"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-native-keyring-store = "1"
 
 [dev-dependencies]
 tempfile = "3"

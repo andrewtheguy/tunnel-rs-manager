@@ -2,9 +2,11 @@
 
 mod config;
 mod crypto;
+mod keychain;
+mod passphrase;
 mod process;
 
-use config::{AppSettings, ConfigStore, ExportData, Forwarding, ImportResult, ServerGroup};
+use config::{AppSettings, ConfigStore, ExportData, Forwarding, ImportResult, PassphraseMeta, ServerGroup};
 use process::{ProcessManager, TunnelInstanceView};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -16,6 +18,7 @@ use tauri::{
 };
 use tokio::sync::Mutex;
 use uuid::Uuid;
+use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 
 /// Guard to prevent multiple shutdown handlers from running
 static SHUTDOWN_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
@@ -26,10 +29,14 @@ pub struct AppState {
     app_settings: Mutex<AppSettings>,
     process_manager: Arc<ProcessManager>,
     config_load_error: Option<String>,
+    cipher: Mutex<Option<crypto::Cipher>>,
+    keychain_available: bool,
 }
 
 impl AppState {
     fn new() -> Self {
+        let keychain_available = keychain::init_store();
+
         let (config_store, config_load_error) = match ConfigStore::load() {
             Ok(store) => (store, None),
             Err(e) => {
@@ -52,16 +59,173 @@ impl AppState {
             app_settings: Mutex::new(app_settings),
             process_manager: Arc::new(ProcessManager::new()),
             config_load_error,
+            cipher: Mutex::new(None),
+            keychain_available,
         }
     }
 }
 
-/// Get the first age recipient from the key file, or return an error.
-fn get_first_recipient() -> Result<String, String> {
-    let recipients = crypto::list_age_recipients()?;
-    recipients.into_iter().next().ok_or_else(|| {
-        "Age key required. Generate an encryption key before creating server groups.".to_string()
+// ============================================================================
+// Passphrase / Encryption Commands
+// ============================================================================
+
+#[tauri::command]
+async fn get_encryption_status(state: State<'_, AppState>) -> Result<String, String> {
+    let cipher = state.cipher.lock().await;
+    if cipher.is_some() {
+        return Ok("unlocked".to_string());
+    }
+    let store = state.config_store.lock().await;
+    if store.passphrase_meta.is_some() {
+        Ok("locked".to_string())
+    } else {
+        Ok("not_configured".to_string())
+    }
+}
+
+#[tauri::command]
+async fn setup_passphrase(
+    state: State<'_, AppState>,
+    instance: String,
+    passphrase: String,
+    save_to_keychain: bool,
+) -> Result<(), String> {
+    if instance.is_empty() || instance.len() > 32 {
+        return Err("Instance name must be 1-32 characters.".to_string());
+    }
+    if !instance.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        return Err("Instance name may only contain letters, digits, hyphens, and underscores.".to_string());
+    }
+    if let Some(err) = passphrase::passphrase_policy_error(&passphrase) {
+        return Err(err.to_string());
+    }
+    {
+        let store = state.config_store.lock().await;
+        if store.passphrase_meta.is_some() {
+            return Err("Passphrase is already configured. Use unlock_passphrase instead.".to_string());
+        }
+    }
+
+    let salt = passphrase::generate_salt();
+    let salt_b64 = BASE64.encode(salt);
+
+    let key = tokio::task::spawn_blocking({
+        let passphrase = passphrase.clone();
+        let salt = salt;
+        move || passphrase::derive_config_key(&passphrase, &salt)
     })
+    .await
+    .map_err(|e| format!("key derivation task failed: {e}"))??;
+
+    let instance_sig = passphrase::compute_instance_sig(&instance, &key);
+
+    let meta = PassphraseMeta {
+        instance: instance.clone(),
+        instance_sig: instance_sig.clone(),
+        salt: salt_b64,
+    };
+
+    {
+        let mut store = state.config_store.lock().await;
+        store.passphrase_meta = Some(meta);
+        store.save()?;
+    }
+
+    let cipher = crypto::Cipher::new(key, instance.clone(), &instance_sig);
+    *state.cipher.lock().await = Some(cipher);
+
+    if save_to_keychain && state.keychain_available {
+        if let Err(e) = keychain::save_passphrase(&instance, &passphrase) {
+            tracing::warn!("Failed to save passphrase to keychain: {e}");
+        }
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn unlock_passphrase(
+    state: State<'_, AppState>,
+    passphrase: String,
+    save_to_keychain: bool,
+) -> Result<(), String> {
+    let store = state.config_store.lock().await;
+    let meta = store
+        .passphrase_meta
+        .as_ref()
+        .ok_or_else(|| "No passphrase configured".to_string())?
+        .clone();
+    drop(store);
+
+    let salt = BASE64
+        .decode(&meta.salt)
+        .map_err(|e| format!("invalid salt in config: {e}"))?;
+
+    let key = tokio::task::spawn_blocking({
+        let passphrase = passphrase.clone();
+        move || passphrase::derive_config_key(&passphrase, &salt)
+    })
+    .await
+    .map_err(|e| format!("key derivation task failed: {e}"))??;
+
+    if !passphrase::verify_instance_sig(&meta.instance, &key, &meta.instance_sig) {
+        return Err("Wrong passphrase".to_string());
+    }
+
+    let cipher = crypto::Cipher::new(key, meta.instance.clone(), &meta.instance_sig);
+    *state.cipher.lock().await = Some(cipher);
+
+    if save_to_keychain && state.keychain_available {
+        if let Err(e) = keychain::save_passphrase(&meta.instance, &passphrase) {
+            tracing::warn!("Failed to save passphrase to keychain: {e}");
+        }
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn try_keychain_unlock(state: State<'_, AppState>) -> Result<bool, String> {
+    if !state.keychain_available {
+        return Ok(false);
+    }
+
+    let store = state.config_store.lock().await;
+    let meta = match store.passphrase_meta.as_ref() {
+        Some(m) => m.clone(),
+        None => return Ok(false),
+    };
+    drop(store);
+
+    let passphrase = match keychain::load_passphrase(&meta.instance) {
+        Some(p) => p,
+        None => return Ok(false),
+    };
+
+    let salt = BASE64
+        .decode(&meta.salt)
+        .map_err(|e| format!("invalid salt in config: {e}"))?;
+
+    let key = tokio::task::spawn_blocking({
+        let passphrase = passphrase;
+        move || passphrase::derive_config_key(&passphrase, &salt)
+    })
+    .await
+    .map_err(|e| format!("key derivation task failed: {e}"))??;
+
+    if !passphrase::verify_instance_sig(&meta.instance, &key, &meta.instance_sig) {
+        tracing::warn!(
+            "Keychain passphrase for instance '{}' failed verification, removing stale entry",
+            meta.instance
+        );
+        keychain::delete_passphrase(&meta.instance);
+        return Ok(false);
+    }
+
+    let cipher = crypto::Cipher::new(key, meta.instance.clone(), &meta.instance_sig);
+    *state.cipher.lock().await = Some(cipher);
+
+    Ok(true)
 }
 
 // ============================================================================
@@ -90,25 +254,24 @@ async fn get_decrypted_tokens(
     id: String,
 ) -> Result<(String, String), String> {
     let uuid = Uuid::parse_str(&id).map_err(|e| format!("Invalid UUID: {}", e))?;
+    let cipher_guard = state.cipher.lock().await;
+    let cipher = cipher_guard
+        .as_ref()
+        .ok_or_else(|| "Encryption not unlocked".to_string())?;
+
     let store = state.config_store.lock().await;
     let group = store
         .get_server_group(uuid)
         .ok_or_else(|| "Server group not found".to_string())?;
 
-    let key_path = crypto::default_age_key_path()?;
-
     let auth = match &group.auth_token {
-        Some(token) if crypto::is_age_encrypted(token) => {
-            crypto::decrypt_value(token, &key_path)?
-        }
+        Some(token) if crypto::is_encrypted(token) => cipher.decrypt(token)?,
         Some(token) => token.clone(),
         None => String::new(),
     };
 
     let alpn = match &group.alpn_token {
-        Some(token) if crypto::is_age_encrypted(token) => {
-            crypto::decrypt_value(token, &key_path)?
-        }
+        Some(token) if crypto::is_encrypted(token) => cipher.decrypt(token)?,
         Some(token) => token.clone(),
         None => String::new(),
     };
@@ -132,9 +295,13 @@ async fn create_server_group(
         return Err("ALPN token is required".to_string());
     }
 
-    let recipient = get_first_recipient()?;
-    let encrypted_auth = crypto::encrypt_value(&auth_token, &recipient)?;
-    let encrypted_alpn = crypto::encrypt_value(&alpn_token, &recipient)?;
+    let cipher_guard = state.cipher.lock().await;
+    let cipher = cipher_guard
+        .as_ref()
+        .ok_or_else(|| "Encryption not unlocked".to_string())?;
+
+    let encrypted_auth = cipher.encrypt(&auth_token)?;
+    let encrypted_alpn = cipher.encrypt(&alpn_token)?;
 
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -177,9 +344,13 @@ async fn update_server_group(
 
     let uuid = Uuid::parse_str(&id).map_err(|e| format!("Invalid UUID: {}", e))?;
 
-    let recipient = get_first_recipient()?;
-    let encrypted_auth = crypto::encrypt_value(&auth_token, &recipient)?;
-    let encrypted_alpn = crypto::encrypt_value(&alpn_token, &recipient)?;
+    let cipher_guard = state.cipher.lock().await;
+    let cipher = cipher_guard
+        .as_ref()
+        .ok_or_else(|| "Encryption not unlocked".to_string())?;
+
+    let encrypted_auth = cipher.encrypt(&auth_token)?;
+    let encrypted_alpn = cipher.encrypt(&alpn_token)?;
 
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -345,13 +516,7 @@ async fn export_configs(
     state: State<'_, AppState>,
 ) -> Result<String, String> {
     let store = state.config_store.lock().await;
-    let mut export_data = store.export();
-
-    // Set encryption_recipient metadata from first recipient in age key file
-    if let Ok(recipient) = get_first_recipient() {
-        export_data.encryption_recipient = Some(recipient);
-    }
-
+    let export_data = store.export();
     serde_json::to_string_pretty(&export_data)
         .map_err(|e| format!("Failed to serialize export data: {}", e))
 }
@@ -361,31 +526,8 @@ async fn import_configs(
     state: State<'_, AppState>,
     json: String,
 ) -> Result<ImportResult, String> {
-    let mut export_data: ExportData = serde_json::from_str(&json)
+    let export_data: ExportData = serde_json::from_str(&json)
         .map_err(|e| format!("Invalid import data: {}", e))?;
-
-    // Check if we need to re-encrypt tokens for the local recipient
-    let local_recipient = get_first_recipient()?;
-    let needs_reencrypt = export_data.encryption_recipient.as_deref() != Some(&local_recipient);
-
-    if needs_reencrypt {
-        let key_path = crypto::default_age_key_path()?;
-
-        for group in export_data.config.server_groups.values_mut() {
-            if let Some(ref token) = group.auth_token {
-                if crypto::is_age_encrypted(token) {
-                    let plaintext = crypto::decrypt_value(token, &key_path)?;
-                    group.auth_token = Some(crypto::encrypt_value(&plaintext, &local_recipient)?);
-                }
-            }
-            if let Some(ref token) = group.alpn_token {
-                if crypto::is_age_encrypted(token) {
-                    let plaintext = crypto::decrypt_value(token, &key_path)?;
-                    group.alpn_token = Some(crypto::encrypt_value(&plaintext, &local_recipient)?);
-                }
-            }
-        }
-    }
 
     let mut store = state.config_store.lock().await;
     Ok(store.import(export_data))
@@ -399,9 +541,13 @@ async fn import_configs(
 async fn export_forwarding_toml(
     state: State<'_, AppState>,
     forwarding_id: String,
-    recipient: String,
 ) -> Result<String, String> {
     let uuid = Uuid::parse_str(&forwarding_id).map_err(|e| format!("Invalid UUID: {}", e))?;
+
+    let cipher_guard = state.cipher.lock().await;
+    let cipher = cipher_guard
+        .as_ref()
+        .ok_or_else(|| "Encryption not unlocked".to_string())?;
 
     let store = state.config_store.lock().await;
 
@@ -418,49 +564,18 @@ async fn export_forwarding_toml(
 
     let mut config = store.build_tunnel_config(uuid)?;
 
-    // Decrypt ageenc: tokens, then re-encrypt with the specified recipient
-    let key_path = crypto::default_age_key_path()?;
-
     if let Some(ref auth) = config.iroh.auth_token {
-        if crypto::is_age_encrypted(auth) {
-            let plaintext = crypto::decrypt_value(auth, &key_path)?;
-            config.iroh.auth_token = Some(crypto::encrypt_value(&plaintext, &recipient)?);
+        if crypto::is_encrypted(auth) {
+            config.iroh.auth_token = Some(cipher.decrypt(auth)?);
         }
     }
     if let Some(ref alpn) = config.iroh.alpn_token {
-        if crypto::is_age_encrypted(alpn) {
-            let plaintext = crypto::decrypt_value(alpn, &key_path)?;
-            config.iroh.alpn_token = Some(crypto::encrypt_value(&plaintext, &recipient)?);
+        if crypto::is_encrypted(alpn) {
+            config.iroh.alpn_token = Some(cipher.decrypt(alpn)?);
         }
     }
 
-    config.iroh.encryption_recipient = Some(recipient);
-
     Ok(config.to_commented_toml(&forwarding_name, &group_name))
-}
-
-// ============================================================================
-// Age Key Commands
-// ============================================================================
-
-#[tauri::command]
-fn check_age_key_exists() -> Result<bool, String> {
-    crypto::age_key_exists()
-}
-
-#[tauri::command]
-fn list_age_recipients() -> Result<Vec<String>, String> {
-    crypto::list_age_recipients()
-}
-
-#[tauri::command]
-fn generate_age_key() -> Result<String, String> {
-    crypto::generate_age_key()
-}
-
-#[tauri::command]
-fn get_age_key_path() -> Result<String, String> {
-    crypto::default_age_key_path().map(|p| p.to_string_lossy().to_string())
 }
 
 // ============================================================================
@@ -486,6 +601,11 @@ async fn start_tunnel(state: State<'_, AppState>, forwarding_id: String) -> Resu
     let uuid = Uuid::parse_str(&forwarding_id).map_err(|e| format!("Invalid UUID: {}", e))?;
 
     let (forwarding_name, server_group_name, config) = {
+        let cipher_guard = state.cipher.lock().await;
+        let cipher = cipher_guard
+            .as_ref()
+            .ok_or_else(|| "Encryption not unlocked".to_string())?;
+
         let store = state.config_store.lock().await;
 
         let forwarding = store
@@ -513,16 +633,14 @@ async fn start_tunnel(state: State<'_, AppState>, forwarding_id: String) -> Resu
 
         let mut config = store.build_tunnel_config(uuid)?;
 
-        // Decrypt ageenc: tokens for the tunnel process
-        let key_path = crypto::default_age_key_path()?;
         if let Some(ref auth) = config.iroh.auth_token {
-            if crypto::is_age_encrypted(auth) {
-                config.iroh.auth_token = Some(crypto::decrypt_value(auth, &key_path)?);
+            if crypto::is_encrypted(auth) {
+                config.iroh.auth_token = Some(cipher.decrypt(auth)?);
             }
         }
         if let Some(ref alpn) = config.iroh.alpn_token {
-            if crypto::is_age_encrypted(alpn) {
-                config.iroh.alpn_token = Some(crypto::decrypt_value(alpn, &key_path)?);
+            if crypto::is_encrypted(alpn) {
+                config.iroh.alpn_token = Some(cipher.decrypt(alpn)?);
             }
         }
 
@@ -632,6 +750,11 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .manage(AppState::new())
         .invoke_handler(tauri::generate_handler![
+            // Passphrase commands
+            get_encryption_status,
+            setup_passphrase,
+            unlock_passphrase,
+            try_keychain_unlock,
             // Server Group commands
             list_server_groups,
             get_server_group,
@@ -651,11 +774,6 @@ pub fn run() {
             export_configs,
             import_configs,
             export_forwarding_toml,
-            // Age key commands
-            check_age_key_exists,
-            list_age_recipients,
-            generate_age_key,
-            get_age_key_path,
             // Process commands
             list_instances,
             get_instance,

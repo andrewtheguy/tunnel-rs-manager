@@ -1,167 +1,82 @@
-use age::secrecy::ExposeSecret;
+use aes_gcm::{Aes256Gcm, Nonce, aead::{Aead, AeadCore, KeyInit, OsRng}};
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
-use std::path::{Path, PathBuf};
 
-const AGEENC_PREFIX: &str = "ageenc:";
+const HEADER: &str = "$TM;1.0;AES-256-GCM;";
+const SIG_PREFIX_LEN: usize = 8;
 
-/// Get the default age key file path: `~/.config/tunnel-rs/age.key`
-/// Shared with the tunnel-rs binary.
-pub fn default_age_key_path() -> Result<PathBuf, String> {
-    let home = dirs::home_dir()
-        .ok_or_else(|| "Could not find home directory".to_string())?;
-    Ok(home.join(".config/tunnel-rs/age.key"))
+pub fn is_encrypted(value: &str) -> bool {
+    value.trim().starts_with(HEADER)
 }
 
-/// Check if an age key file exists at the default path.
-pub fn age_key_exists() -> Result<bool, String> {
-    Ok(default_age_key_path()?.exists())
+fn truncate_sig(instance_sig: &str) -> String {
+    instance_sig.chars().take(SIG_PREFIX_LEN).collect()
 }
 
-/// Generate a new age x25519 keypair, append to default key file, return public key.
-pub fn generate_age_key() -> Result<String, String> {
-    let identity = age::x25519::Identity::generate();
-    let secret = identity.to_string();
-    let public_key = identity.to_public().to_string();
-
-    let path = default_age_key_path()?;
-    write_identity_file(&path, secret.expose_secret(), &public_key, false)?;
-
-    Ok(public_key)
+pub struct Cipher {
+    key: [u8; 32],
+    instance: String,
+    sig_prefix: String,
 }
 
-/// Read all public keys from the age key file (lines matching `# public key: age1...`).
-pub fn list_age_recipients() -> Result<Vec<String>, String> {
-    let path = default_age_key_path()?;
-    if !path.exists() {
-        return Ok(vec![]);
+impl std::fmt::Debug for Cipher {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Cipher")
+            .field("instance", &self.instance)
+            .field("sig_prefix", &self.sig_prefix)
+            .finish()
     }
-    let contents = std::fs::read_to_string(&path)
-        .map_err(|e| format!("Failed to read age key file: {}", e))?;
-    let recipients: Vec<String> = contents
-        .lines()
-        .filter_map(|l| l.strip_prefix("# public key: "))
-        .map(|s| s.trim().to_string())
-        .filter(|s| s.starts_with("age1"))
-        .collect();
-    Ok(recipients)
 }
 
-/// Check if a string value is an age-encrypted value (has `ageenc:` prefix).
-pub fn is_age_encrypted(value: &str) -> bool {
-    value.trim().starts_with(AGEENC_PREFIX)
-}
-
-/// Encrypt a plaintext string for the given age recipient (public key).
-/// Returns `ageenc:<base64>`.
-pub fn encrypt_value(plaintext: &str, recipient_str: &str) -> Result<String, String> {
-    let recipient: age::x25519::Recipient = recipient_str
-        .parse()
-        .map_err(|e| format!("Invalid age recipient '{}': {}", recipient_str, e))?;
-    let ciphertext = age::encrypt(&recipient, plaintext.as_bytes())
-        .map_err(|e| format!("Encryption failed: {}", e))?;
-    Ok(format!("{}{}", AGEENC_PREFIX, BASE64.encode(&ciphertext)))
-}
-
-/// Decrypt an `ageenc:`-prefixed value using the identity file at `key_path`.
-/// age automatically tries all identities in the file.
-pub fn decrypt_value(value: &str, key_path: &Path) -> Result<String, String> {
-    let encoded = value
-        .trim()
-        .strip_prefix(AGEENC_PREFIX)
-        .ok_or_else(|| format!("Value does not start with '{}'", AGEENC_PREFIX))?;
-    let ciphertext = BASE64
-        .decode(encoded)
-        .map_err(|e| format!("Invalid base64 in ageenc: value: {}", e))?;
-
-    let contents = std::fs::read_to_string(key_path)
-        .map_err(|e| format!("Failed to read age key file: {}", e))?;
-
-    // Parse all identities from the file
-    let identities: Vec<age::x25519::Identity> = contents
-        .lines()
-        .filter(|l| l.starts_with("AGE-SECRET-KEY-"))
-        .filter_map(|l| l.parse::<age::x25519::Identity>().ok())
-        .collect();
-
-    if identities.is_empty() {
-        return Err(format!(
-            "No AGE-SECRET-KEY found in {}",
-            key_path.display()
-        ));
-    }
-
-    // Try each identity
-    for identity in &identities {
-        if let Ok(plaintext) = age::decrypt(identity, &ciphertext) {
-            return String::from_utf8(plaintext)
-                .map_err(|e| format!("Decrypted value is not valid UTF-8: {}", e));
+impl Cipher {
+    pub fn new(key: [u8; 32], instance: String, instance_sig: &str) -> Self {
+        Self {
+            key,
+            instance,
+            sig_prefix: truncate_sig(instance_sig),
         }
     }
 
-    Err("Age decryption failed: no matching key found".to_string())
-}
-
-/// Write an age identity file with restricted permissions.
-/// If the file exists and `force` is false, the new keypair is appended.
-pub fn write_identity_file(
-    path: &Path,
-    secret_key: &str,
-    public_key: &str,
-    force: bool,
-) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create parent directory: {}", e))?;
+    pub fn encrypt(&self, plaintext: &str) -> Result<String, String> {
+        let cipher = Aes256Gcm::new(aes_gcm::Key::<Aes256Gcm>::from_slice(&self.key));
+        let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+        let mut blob = cipher
+            .encrypt(&nonce, plaintext.as_bytes())
+            .map_err(|e| format!("aes-256-gcm encrypt: {e}"))?;
+        let mut out = Vec::with_capacity(nonce.len() + blob.len());
+        out.extend_from_slice(nonce.as_slice());
+        out.append(&mut blob);
+        Ok(format!(
+            "{HEADER}{};{};{}",
+            self.instance,
+            self.sig_prefix,
+            BASE64.encode(&out)
+        ))
     }
 
-    let append = path.exists() && !force;
-    let now = jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z");
-    let block = format!(
-        "# created: {}\n# public key: {}\n{}\n",
-        now, public_key, secret_key
-    );
-    let content = if append {
-        format!("\n{}", block)
-    } else {
-        block
-    };
-
-    #[cfg(unix)]
-    {
-        use std::io::Write;
-        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .append(append)
-            .truncate(!append)
-            .mode(0o600)
-            .open(path)
-            .map_err(|e| format!("Failed to open age key file: {}", e))?;
-        file.write_all(content.as_bytes())
-            .map_err(|e| format!("Failed to write age key file: {}", e))?;
-        file.set_permissions(std::fs::Permissions::from_mode(0o600))
-            .map_err(|e| format!("Failed to set age key file permissions: {}", e))?;
-    }
-
-    #[cfg(not(unix))]
-    {
-        if append {
-            use std::io::Write;
-            let mut file = std::fs::OpenOptions::new()
-                .append(true)
-                .open(path)
-                .map_err(|e| format!("Failed to open age key file: {}", e))?;
-            file.write_all(content.as_bytes())
-                .map_err(|e| format!("Failed to append to age key file: {}", e))?;
-        } else {
-            std::fs::write(path, &content)
-                .map_err(|e| format!("Failed to write age key file: {}", e))?;
+    pub fn decrypt(&self, value: &str) -> Result<String, String> {
+        let after_header = value
+            .trim()
+            .strip_prefix(HEADER)
+            .ok_or_else(|| format!("value is not encrypted (missing header)"))?;
+        let (_, rest) = after_header
+            .split_once(';')
+            .ok_or_else(|| "malformed encrypted value (missing instance separator)".to_string())?;
+        let (_, encoded) = rest
+            .split_once(';')
+            .ok_or_else(|| "malformed encrypted value (missing sig separator)".to_string())?;
+        let raw = BASE64
+            .decode(encoded)
+            .map_err(|e| format!("invalid base64 in encrypted value: {e}"))?;
+        if raw.len() < 12 + 16 {
+            return Err(format!("encrypted payload too short ({} bytes)", raw.len()));
         }
+        let (nonce_bytes, ciphertext) = raw.split_at(12);
+        let cipher = Aes256Gcm::new(aes_gcm::Key::<Aes256Gcm>::from_slice(&self.key));
+        let plaintext = cipher
+            .decrypt(Nonce::from_slice(nonce_bytes), ciphertext)
+            .map_err(|e| format!("aes-256-gcm decrypt: {e}"))?;
+        String::from_utf8(plaintext).map_err(|e| format!("decrypted value is not valid UTF-8: {e}"))
     }
-
-    Ok(())
 }
 
 #[cfg(test)]
@@ -169,94 +84,48 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_is_age_encrypted() {
-        assert!(is_age_encrypted("ageenc:YWdl..."));
-        assert!(is_age_encrypted("  ageenc:YWdl...  "));
-        assert!(!is_age_encrypted("plaintext_token"));
-        assert!(!is_age_encrypted(""));
+    fn prefix_detection() {
+        assert!(is_encrypted(
+            "$TM;1.0;AES-256-GCM;mysite;abcd1234;AAAA"
+        ));
+        assert!(!is_encrypted(""));
+        assert!(!is_encrypted("plain"));
+        assert!(!is_encrypted("ageenc:something"));
     }
 
     #[test]
-    fn test_encrypt_decrypt_roundtrip() {
-        let identity = age::x25519::Identity::generate();
-        let secret = identity.to_string();
-        let public_key = identity.to_public().to_string();
-
-        let plaintext = "my-secret-token-value";
-        let encrypted = encrypt_value(plaintext, &public_key).unwrap();
-
-        assert!(is_age_encrypted(&encrypted));
-        assert!(encrypted.starts_with("ageenc:"));
-        assert!(!encrypted.contains('\n'));
-
-        let dir = tempfile::tempdir().unwrap();
-        let key_path = dir.path().join("age.key");
-        write_identity_file(&key_path, secret.expose_secret(), &public_key, false).unwrap();
-
-        let decrypted = decrypt_value(&encrypted, &key_path).unwrap();
-        assert_eq!(decrypted, plaintext);
+    fn round_trip() {
+        let cipher = Cipher::new([0x42u8; 32], "test".into(), "abcd12345678");
+        let enc = cipher.encrypt("hunter2").unwrap();
+        assert!(enc.starts_with("$TM;1.0;AES-256-GCM;test;abcd1234;"));
+        assert!(!enc.contains('\n'));
+        assert_eq!(cipher.decrypt(&enc).unwrap(), "hunter2");
     }
 
     #[test]
-    fn test_decrypt_wrong_key() {
-        let id1 = age::x25519::Identity::generate();
-        let secret1 = id1.to_string();
-        let public1 = id1.to_public().to_string();
-
-        let id2 = age::x25519::Identity::generate();
-        let public2 = id2.to_public().to_string();
-
-        let encrypted = encrypt_value("secret", &public2).unwrap();
-
-        let dir = tempfile::tempdir().unwrap();
-        let key_path = dir.path().join("age.key");
-        write_identity_file(&key_path, secret1.expose_secret(), &public1, false).unwrap();
-
-        let result = decrypt_value(&encrypted, &key_path);
-        assert!(result.is_err());
+    fn wrong_key_fails() {
+        let c1 = Cipher::new([0x01u8; 32], "inst".into(), "sig12345678");
+        let c2 = Cipher::new([0x02u8; 32], "inst".into(), "sig12345678");
+        let enc = c1.encrypt("secret").unwrap();
+        assert!(c2.decrypt(&enc).is_err());
     }
 
     #[test]
-    fn test_generate_and_list() {
-        let identity = age::x25519::Identity::generate();
-        let secret = identity.to_string();
-        let public_key = identity.to_public().to_string();
-
-        let dir = tempfile::tempdir().unwrap();
-        let key_path = dir.path().join("age.key");
-        write_identity_file(&key_path, secret.expose_secret(), &public_key, false).unwrap();
-
-        let contents = std::fs::read_to_string(&key_path).unwrap();
-        let recipients: Vec<String> = contents
-            .lines()
-            .filter_map(|l| l.strip_prefix("# public key: "))
-            .map(|s| s.trim().to_string())
-            .filter(|s| s.starts_with("age1"))
-            .collect();
-        assert_eq!(recipients.len(), 1);
-        assert_eq!(recipients[0], public_key);
+    fn tampered_fails() {
+        let cipher = Cipher::new([0x33u8; 32], "inst".into(), "sig12345678");
+        let enc = cipher.encrypt("data").unwrap();
+        let semi_pos = enc.rfind(';').unwrap();
+        let mut tampered = enc.clone();
+        let bytes = unsafe { tampered.as_bytes_mut() };
+        let i = semi_pos + 6;
+        bytes[i] = if bytes[i] == b'A' { b'B' } else { b'A' };
+        assert!(cipher.decrypt(&tampered).is_err());
     }
 
     #[test]
-    fn test_write_identity_file_appends() {
-        let dir = tempfile::tempdir().unwrap();
-        let key_path = dir.path().join("age.key");
-
-        let id1 = age::x25519::Identity::generate();
-        let s1 = id1.to_string();
-        let p1 = id1.to_public().to_string();
-        write_identity_file(&key_path, s1.expose_secret(), &p1, false).unwrap();
-
-        let id2 = age::x25519::Identity::generate();
-        let s2 = id2.to_string();
-        let p2 = id2.to_public().to_string();
-        write_identity_file(&key_path, s2.expose_secret(), &p2, false).unwrap();
-
-        let contents = std::fs::read_to_string(&key_path).unwrap();
-        let secret_lines: Vec<&str> = contents
-            .lines()
-            .filter(|l| l.starts_with("AGE-SECRET-KEY-"))
-            .collect();
-        assert_eq!(secret_lines.len(), 2);
+    fn sig_prefix_truncated_to_8_chars() {
+        assert_eq!(truncate_sig("wgMS4JCMUouQZRnB4vpscg=="), "wgMS4JCM");
+        assert_eq!(truncate_sig("short"), "short");
+        assert_eq!(truncate_sig(""), "");
     }
 }
