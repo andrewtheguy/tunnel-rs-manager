@@ -90,6 +90,22 @@ async fn setup_passphrase(
     passphrase: String,
     save_to_keychain: bool,
 ) -> Result<(), String> {
+    if instance.is_empty() || instance.len() > 32 {
+        return Err("Instance name must be 1-32 characters.".to_string());
+    }
+    if !instance.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        return Err("Instance name may only contain letters, digits, hyphens, and underscores.".to_string());
+    }
+    if passphrase.len() < 8 {
+        return Err("Passphrase must be at least 8 characters.".to_string());
+    }
+    {
+        let store = state.config_store.lock().await;
+        if store.passphrase_meta.is_some() {
+            return Err("Passphrase is already configured. Use unlock_passphrase instead.".to_string());
+        }
+    }
+
     let salt = passphrase::generate_salt();
     let salt_b64 = BASE64.encode(salt);
 
