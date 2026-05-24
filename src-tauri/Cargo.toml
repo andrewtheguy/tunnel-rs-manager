@@ -39,5 +39,8 @@ apple-native-keyring-store = { version = "1", features = ["keychain"] }
 [target.'cfg(target_os = "linux")'.dependencies]
 dbus-secret-service-keyring-store = { version = "1", features = ["crypto-rust"] }
 
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-native-keyring-store = "1"
+
 [dev-dependencies]
 tempfile = "3"

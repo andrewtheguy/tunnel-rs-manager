@@ -15,6 +15,13 @@ pub(crate) fn init_store() -> bool {
             return true;
         }
     }
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(store) = windows_native_keyring_store::Store::new() {
+            keyring_core::set_default_store(store);
+            return true;
+        }
+    }
     false
 }
 
