@@ -15,6 +15,14 @@ fn current_timestamp() -> u64 {
         .as_secs()
 }
 
+/// Passphrase encryption metadata stored alongside configs
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PassphraseMeta {
+    pub instance: String,
+    pub instance_sig: String,
+    pub salt: String,
+}
+
 /// Iroh transport tuning configuration
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TransportConfig {
@@ -49,10 +57,6 @@ pub struct IrohConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub alpn_token_file: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub encryption_key_file: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub encryption_recipient: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub transport: Option<TransportConfig>,
 }
 
@@ -81,8 +85,6 @@ impl TunnelClientConfig {
                 auth_token_file: None,
                 alpn_token: None,
                 alpn_token_file: None,
-                encryption_key_file: None,
-                encryption_recipient: None,
                 transport: None,
             },
         }
@@ -157,16 +159,6 @@ impl TunnelClientConfig {
             out.push_str(&format!("alpn_token_file = {}\n", toml::Value::String(v.clone())));
         }
 
-        if let Some(ref v) = self.iroh.encryption_key_file {
-            out.push_str("\n# Path to age identity file for decrypting inline secrets\n");
-            out.push_str(&format!("encryption_key_file = {}\n", toml::Value::String(v.clone())));
-        }
-
-        if let Some(ref v) = self.iroh.encryption_recipient {
-            out.push_str("\n# Age public key used to encrypt inline secrets\n");
-            out.push_str(&format!("encryption_recipient = {}\n", toml::Value::String(v.clone())));
-        }
-
         if let Some(ref transport) = self.iroh.transport {
             let has_fields = transport.congestion_controller.is_some()
                 || transport.receive_window.is_some()
@@ -198,10 +190,8 @@ pub struct ServerGroup {
     pub id: Uuid,
     pub name: String,
     pub server_node_id: String,
-    /// Stored as `ageenc:...` strings in configs.json
     #[serde(default)]
     pub auth_token: Option<String>,
-    /// Stored as `ageenc:...` strings in configs.json
     #[serde(default)]
     pub alpn_token: Option<String>,
     #[serde(default)]
@@ -232,14 +222,12 @@ pub struct Forwarding {
 // Export/Import Data Structures
 // ============================================================================
 
-/// Export data format — same structure as configs.json with ageenc: tokens inline
+/// Export data format — configs with encrypted tokens inline
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExportData {
     pub version: u32,
     pub exported_at: u64,
     pub config: ConfigStore,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub encryption_recipient: Option<String>,
 }
 
 /// Result of import operation
@@ -307,6 +295,8 @@ impl AppSettings {
 pub struct ConfigStore {
     pub server_groups: HashMap<Uuid, ServerGroup>,
     pub forwardings: HashMap<Uuid, Forwarding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub passphrase_meta: Option<PassphraseMeta>,
 }
 
 impl ConfigStore {
@@ -327,7 +317,7 @@ impl ConfigStore {
             .map_err(|e| format!("Failed to parse config store: {}", e))
     }
 
-    /// Save config store to disk (tokens are stored as ageenc: strings)
+    /// Save config store to disk
     pub fn save(&self) -> Result<(), String> {
         let path = Self::store_path()?;
         if let Some(parent) = path.parent() {
@@ -466,13 +456,12 @@ impl ConfigStore {
     // Export/Import
     // ============================================================================
 
-    /// Export all configs (tokens are ageenc: strings, included as-is)
+    /// Export all configs (tokens are encrypted strings, included as-is)
     pub fn export(&self) -> ExportData {
         ExportData {
             version: 1,
             exported_at: current_timestamp(),
             config: self.clone(),
-            encryption_recipient: None,
         }
     }
 

@@ -2,18 +2,13 @@ import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { save } from '@tauri-apps/plugin-dialog';
 import { writeTextFile } from '@tauri-apps/plugin-fs';
-import { Sidebar, ServerGroupCard, ServerGroupForm, ForwardingForm, ConfirmDialog, AgeKeyDialog } from './components';
+import { Sidebar, ServerGroupCard, ServerGroupForm, ForwardingForm, ConfirmDialog, PassphraseDialog } from './components';
 import { useServerGroups, useForwardings, useTunnelInstances, useBinaryPath } from './hooks';
 import type { ServerGroup, Forwarding, ServerGroupFormData, ForwardingFormData, ImportResult } from './types';
 import { serverGroupToForm, forwardingToForm } from './types';
 import './App.css';
 
 type View = 'list' | 'create-group' | 'edit-group' | 'create-forwarding' | 'edit-forwarding';
-
-type PendingAction =
-  | { type: 'toml-export'; forwardingId: string }
-  | { type: 'create-group'; form: ServerGroupFormData }
-  | { type: 'edit-group'; form: ServerGroupFormData };
 
 function App() {
   const { serverGroups, loading: groupsLoading, createServerGroup, updateServerGroup, deleteServerGroup, getServerGroup, refresh: refreshGroups } = useServerGroups();
@@ -34,11 +29,60 @@ function App() {
   const [pendingDelete, setPendingDelete] = useState<{ type: 'group' | 'forwarding'; id: string; name: string } | null>(null);
   const [deleting, setDeleting] = useState(false);
 
-  // Age key dialog state
-  const [showAgeKeyDialog, setShowAgeKeyDialog] = useState(false);
-  const [ageKeyMode, setAgeKeyMode] = useState<'setup' | 'select'>('setup');
-  const [ageKeyRecipients, setAgeKeyRecipients] = useState<string[]>([]);
-  const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
+  // Passphrase state
+  const [encryptionStatus, setEncryptionStatus] = useState<'loading' | 'not_configured' | 'locked' | 'unlocked'>('loading');
+  const [showPassphraseDialog, setShowPassphraseDialog] = useState(false);
+  const [passphraseMode, setPassphraseMode] = useState<'setup' | 'unlock'>('setup');
+
+  // Startup: check encryption status and try keychain auto-unlock
+  useEffect(() => {
+    async function initEncryption() {
+      try {
+        const status = await invoke<string>('get_encryption_status');
+        if (status === 'unlocked') {
+          setEncryptionStatus('unlocked');
+        } else if (status === 'not_configured') {
+          setEncryptionStatus('not_configured');
+        } else {
+          const unlocked = await invoke<boolean>('try_keychain_unlock');
+          if (unlocked) {
+            setEncryptionStatus('unlocked');
+          } else {
+            setEncryptionStatus('locked');
+            setPassphraseMode('unlock');
+            setShowPassphraseDialog(true);
+          }
+        }
+      } catch {
+        setEncryptionStatus('not_configured');
+      }
+    }
+    initEncryption();
+  }, []);
+
+  const ensureUnlocked = useCallback(async (): Promise<boolean> => {
+    if (encryptionStatus === 'unlocked') return true;
+    if (encryptionStatus === 'not_configured') {
+      setPassphraseMode('setup');
+      setShowPassphraseDialog(true);
+      return false;
+    }
+    if (encryptionStatus === 'locked') {
+      setPassphraseMode('unlock');
+      setShowPassphraseDialog(true);
+      return false;
+    }
+    return false;
+  }, [encryptionStatus]);
+
+  const handlePassphraseComplete = useCallback(() => {
+    setShowPassphraseDialog(false);
+    setEncryptionStatus('unlocked');
+  }, []);
+
+  const handlePassphraseCancel = useCallback(() => {
+    setShowPassphraseDialog(false);
+  }, []);
 
   // Restore scroll position when returning to list view
   useEffect(() => {
@@ -56,45 +100,6 @@ function App() {
     if (mainContentRef.current) {
       savedScrollPos.current = mainContentRef.current.scrollTop;
     }
-  }, []);
-
-  // ── Age key helpers ──
-
-  const showAgeKeySetup = useCallback((action: PendingAction) => {
-    setPendingAction(action);
-    setAgeKeyMode('setup');
-    setAgeKeyRecipients([]);
-    setShowAgeKeyDialog(true);
-  }, []);
-
-  const resolveRecipientForToml = useCallback(async (action: PendingAction): Promise<string | null> => {
-    const keyExists = await invoke<boolean>('check_age_key_exists');
-    if (!keyExists) {
-      showAgeKeySetup(action);
-      return null;
-    }
-    const recipients = await invoke<string[]>('list_age_recipients');
-    if (recipients.length === 0) {
-      showAgeKeySetup(action);
-      return null;
-    }
-    if (recipients.length === 1) {
-      return recipients[0];
-    }
-    setPendingAction(action);
-    setAgeKeyMode('select');
-    setAgeKeyRecipients(recipients);
-    setShowAgeKeyDialog(true);
-    return null;
-  }, [showAgeKeySetup]);
-
-  const handleAgeKeyGenerate = useCallback(async () => {
-    return await invoke<string>('generate_age_key');
-  }, []);
-
-  const handleAgeKeyCancel = useCallback(() => {
-    setShowAgeKeyDialog(false);
-    setPendingAction(null);
   }, []);
 
   // ── Server Group handlers ──
@@ -116,21 +121,27 @@ function App() {
     setView('edit-group');
   }, [saveScrollPosition]);
 
-  const performCreateGroup = useCallback(async (form: ServerGroupFormData) => {
+  const handleCreateGroupSubmit = useCallback(async (form: ServerGroupFormData) => {
+    const ready = await ensureUnlocked();
+    if (!ready) return;
     try {
       await createServerGroup(form);
       setView('list');
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      if (msg.includes('Age key required')) {
-        showAgeKeySetup({ type: 'create-group', form });
+      if (msg.includes('Encryption not unlocked')) {
+        setEncryptionStatus('locked');
+        setPassphraseMode('unlock');
+        setShowPassphraseDialog(true);
       } else {
         alert(`Failed to create server group: ${msg}`);
       }
     }
-  }, [createServerGroup, showAgeKeySetup]);
+  }, [createServerGroup, ensureUnlocked]);
 
-  const performEditGroup = useCallback(async (form: ServerGroupFormData) => {
+  const handleEditGroupSubmit = useCallback(async (form: ServerGroupFormData) => {
+    const ready = await ensureUnlocked();
+    if (!ready) return;
     try {
       if (!editingGroup) throw new Error('No editing group selected');
       await updateServerGroup(editingGroup.id, form);
@@ -138,21 +149,15 @@ function App() {
       setEditingGroup(null);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      if (msg.includes('Age key required')) {
-        showAgeKeySetup({ type: 'edit-group', form });
+      if (msg.includes('Encryption not unlocked')) {
+        setEncryptionStatus('locked');
+        setPassphraseMode('unlock');
+        setShowPassphraseDialog(true);
       } else {
         alert(`Failed to update server group: ${msg}`);
       }
     }
-  }, [editingGroup, updateServerGroup, showAgeKeySetup]);
-
-  const handleCreateGroupSubmit = useCallback(async (form: ServerGroupFormData) => {
-    await performCreateGroup(form);
-  }, [performCreateGroup]);
-
-  const handleEditGroupSubmit = useCallback(async (form: ServerGroupFormData) => {
-    await performEditGroup(form);
-  }, [performEditGroup]);
+  }, [editingGroup, updateServerGroup, ensureUnlocked]);
 
   const handleDeleteGroup = useCallback((id: string) => {
     const group = getServerGroup(id);
@@ -342,63 +347,24 @@ function App() {
 
   // ── TOML export ──
 
-  const exportTomlToFile = useCallback(async (forwardingId: string, recipient: string) => {
-    const tomlContent = await invoke<string>('export_forwarding_toml', { forwardingId, recipient });
-    const forwarding = getForwarding(forwardingId);
-    const defaultName = forwarding ? `${forwarding.name}.toml` : 'forwarding.toml';
-    const filePath = await save({
-      defaultPath: defaultName,
-      filters: [{ name: 'TOML', extensions: ['toml'] }],
-    });
-    if (filePath) {
-      await writeTextFile(filePath, tomlContent);
-    }
-  }, [getForwarding]);
-
   const handleExportForwardingToml = useCallback(async (id: string) => {
     try {
-      const action: PendingAction = { type: 'toml-export', forwardingId: id };
-      const recipient = await resolveRecipientForToml(action);
-      if (recipient) {
-        await exportTomlToFile(id, recipient);
+      const ready = await ensureUnlocked();
+      if (!ready) return;
+      const tomlContent = await invoke<string>('export_forwarding_toml', { forwardingId: id });
+      const forwarding = getForwarding(id);
+      const defaultName = forwarding ? `${forwarding.name}.toml` : 'forwarding.toml';
+      const filePath = await save({
+        defaultPath: defaultName,
+        filters: [{ name: 'TOML', extensions: ['toml'] }],
+      });
+      if (filePath) {
+        await writeTextFile(filePath, tomlContent);
       }
     } catch (e) {
       alert(`Failed to export forwarding config: ${e instanceof Error ? e.message : e}`);
     }
-  }, [resolveRecipientForToml, exportTomlToFile]);
-
-  // ── Age key dialog completion ──
-
-  const handleAgeKeyComplete = useCallback(async (recipient: string) => {
-    setShowAgeKeyDialog(false);
-    const action = pendingAction;
-    setPendingAction(null);
-    if (!action) return;
-
-    try {
-      if (action.type === 'toml-export') {
-        await exportTomlToFile(action.forwardingId, recipient);
-      } else if (action.type === 'create-group') {
-        try {
-          await createServerGroup(action.form);
-          setView('list');
-        } catch (e) {
-          alert(`Failed to create server group: ${e instanceof Error ? e.message : e}`);
-        }
-      } else if (action.type === 'edit-group') {
-        try {
-          if (!editingGroup) throw new Error('No editing group selected');
-          await updateServerGroup(editingGroup.id, action.form);
-          setView('list');
-          setEditingGroup(null);
-        } catch (e) {
-          alert(`Failed to update server group: ${e instanceof Error ? e.message : e}`);
-        }
-      }
-    } catch (e) {
-      alert(`Operation failed: ${e instanceof Error ? e.message : e}`);
-    }
-  }, [pendingAction, exportTomlToFile, createServerGroup, updateServerGroup, editingGroup]);
+  }, [ensureUnlocked, getForwarding]);
 
   // ── Scroll/selection ──
 
@@ -514,7 +480,7 @@ function App() {
                 <button
                   className="btn-small"
                   onClick={handleExport}
-                  title="Export all configs with age-encrypted credentials"
+                  title="Export all configs"
                 >
                   Export
                 </button>
@@ -607,13 +573,11 @@ function App() {
         />
       )}
 
-      {showAgeKeyDialog && (
-        <AgeKeyDialog
-          mode={ageKeyMode}
-          recipients={ageKeyRecipients}
-          onComplete={handleAgeKeyComplete}
-          onCancel={handleAgeKeyCancel}
-          onGenerate={handleAgeKeyGenerate}
+      {showPassphraseDialog && (
+        <PassphraseDialog
+          mode={passphraseMode}
+          onComplete={handlePassphraseComplete}
+          onCancel={handlePassphraseCancel}
         />
       )}
     </div>
