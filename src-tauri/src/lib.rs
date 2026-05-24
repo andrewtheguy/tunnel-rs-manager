@@ -96,8 +96,8 @@ async fn setup_passphrase(
     if !instance.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
         return Err("Instance name may only contain letters, digits, hyphens, and underscores.".to_string());
     }
-    if passphrase.len() < 8 {
-        return Err("Passphrase must be at least 8 characters.".to_string());
+    if let Some(err) = passphrase::passphrase_policy_error(&passphrase) {
+        return Err(err.to_string());
     }
     {
         let store = state.config_store.lock().await;
@@ -214,6 +214,11 @@ async fn try_keychain_unlock(state: State<'_, AppState>) -> Result<bool, String>
     .map_err(|e| format!("key derivation task failed: {e}"))??;
 
     if !passphrase::verify_instance_sig(&meta.instance, &key, &meta.instance_sig) {
+        tracing::warn!(
+            "Keychain passphrase for instance '{}' failed verification, removing stale entry",
+            meta.instance
+        );
+        keychain::delete_passphrase(&meta.instance);
         return Ok(false);
     }
 

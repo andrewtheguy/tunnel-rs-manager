@@ -34,6 +34,27 @@ pub(crate) fn save_passphrase(instance: &str, passphrase: &str) -> Result<(), St
 }
 
 pub(crate) fn load_passphrase(instance: &str) -> Option<String> {
-    let entry = keyring_core::Entry::new(SERVICE, instance).ok()?;
-    entry.get_password().ok()
+    let entry = match keyring_core::Entry::new(SERVICE, instance) {
+        Ok(e) => e,
+        Err(e) => {
+            tracing::warn!("keychain entry error for instance '{instance}': {e}");
+            return None;
+        }
+    };
+    match entry.get_password() {
+        Ok(pw) => Some(pw),
+        Err(keyring_core::Error::NoEntry) => None,
+        Err(e) => {
+            tracing::warn!("keychain load error for instance '{instance}': {e}");
+            None
+        }
+    }
+}
+
+pub(crate) fn delete_passphrase(instance: &str) {
+    if let Ok(entry) = keyring_core::Entry::new(SERVICE, instance) {
+        if let Err(e) = entry.delete_credential() {
+            tracing::warn!("keychain delete error for instance '{instance}': {e}");
+        }
+    }
 }

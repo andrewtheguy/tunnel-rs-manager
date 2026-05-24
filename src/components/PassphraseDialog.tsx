@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import './PassphraseDialog.css';
 
@@ -8,6 +8,8 @@ interface PassphraseDialogProps {
   onCancel: () => void;
 }
 
+const MIN_PASSPHRASE_LEN = 12;
+
 export function PassphraseDialog({ mode, onComplete, onCancel }: PassphraseDialogProps) {
   const [instance, setInstance] = useState('default');
   const [passphrase, setPassphrase] = useState('');
@@ -16,20 +18,56 @@ export function PassphraseDialog({ mode, onComplete, onCancel }: PassphraseDialo
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
+  const clearSensitive = useCallback(() => {
+    setPassphrase('');
+    setConfirm('');
+  }, []);
+
+  useEffect(() => {
+    return () => clearSensitive();
+  }, [clearSensitive]);
+
+  const handleComplete = useCallback(() => {
+    clearSensitive();
+    onComplete();
+  }, [clearSensitive, onComplete]);
+
+  const handleCancel = useCallback(() => {
+    clearSensitive();
+    setError(null);
+    onCancel();
+  }, [clearSensitive, onCancel]);
+
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && !loading) {
-        onCancel();
+        handleCancel();
       }
     };
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [onCancel, loading]);
+  }, [handleCancel, loading]);
 
   const handleSetup = async () => {
     setError(null);
-    if (passphrase.length < 8) {
-      setError('Passphrase must be at least 8 characters.');
+    if (passphrase.length < MIN_PASSPHRASE_LEN) {
+      setError(`Passphrase must be at least ${MIN_PASSPHRASE_LEN} characters.`);
+      return;
+    }
+    if (!/[a-z]/.test(passphrase)) {
+      setError('Passphrase must contain a lowercase letter.');
+      return;
+    }
+    if (!/[A-Z]/.test(passphrase)) {
+      setError('Passphrase must contain an uppercase letter.');
+      return;
+    }
+    if (!/[0-9]/.test(passphrase)) {
+      setError('Passphrase must contain a digit.');
+      return;
+    }
+    if (!/[^a-zA-Z0-9]/.test(passphrase)) {
+      setError('Passphrase must contain a special character.');
       return;
     }
     if (passphrase !== confirm) {
@@ -47,7 +85,7 @@ export function PassphraseDialog({ mode, onComplete, onCancel }: PassphraseDialo
         passphrase,
         saveToKeychain,
       });
-      onComplete();
+      handleComplete();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -67,7 +105,7 @@ export function PassphraseDialog({ mode, onComplete, onCancel }: PassphraseDialo
         passphrase,
         saveToKeychain,
       });
-      onComplete();
+      handleComplete();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (msg.includes('Wrong passphrase')) {
@@ -102,7 +140,7 @@ export function PassphraseDialog({ mode, onComplete, onCancel }: PassphraseDialo
             <>
               <h3>Set Up Encryption</h3>
               <p className="passphrase-description">
-                Choose a passphrase to encrypt your credentials. This passphrase will be needed to unlock the app.
+                Choose a passphrase to encrypt your credentials. Must be at least {MIN_PASSPHRASE_LEN} characters with uppercase, lowercase, digit, and special character.
               </p>
 
               <label className="passphrase-field">
@@ -113,6 +151,7 @@ export function PassphraseDialog({ mode, onComplete, onCancel }: PassphraseDialo
                   onChange={e => setInstance(e.target.value)}
                   placeholder="default"
                   disabled={loading}
+                  onBlur={e => setInstance(e.target.value.trim())}
                   autoFocus
                 />
               </label>
@@ -123,7 +162,7 @@ export function PassphraseDialog({ mode, onComplete, onCancel }: PassphraseDialo
                   type="password"
                   value={passphrase}
                   onChange={e => setPassphrase(e.target.value)}
-                  placeholder="At least 8 characters"
+                  placeholder={`At least ${MIN_PASSPHRASE_LEN} characters`}
                   disabled={loading}
                 />
               </label>
@@ -176,7 +215,7 @@ export function PassphraseDialog({ mode, onComplete, onCancel }: PassphraseDialo
             <button
               type="button"
               className="btn btn-secondary"
-              onClick={onCancel}
+              onClick={handleCancel}
               disabled={loading}
             >
               Cancel

@@ -2,6 +2,7 @@ use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use hmac::{Hmac, KeyInit, Mac};
 use scrypt::Params as ScryptParams;
 use sha2::Sha256;
+use subtle::ConstantTimeEq;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -32,22 +33,30 @@ pub(crate) fn verify_instance_sig(instance: &str, key: &[u8; 32], expected_sig_b
         Ok(b) => b,
         Err(_) => return false,
     };
-    ct_eq(&computed, &expected)
+    computed.ct_eq(&expected).into()
 }
 
 pub(crate) fn generate_salt() -> [u8; 32] {
     rand::random()
 }
 
-fn ct_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
+pub(crate) fn passphrase_policy_error(passphrase: &str) -> Option<&'static str> {
+    if passphrase.chars().count() < 12 {
+        return Some("Must be at least 12 characters.");
     }
-    let mut acc: u8 = 0;
-    for (x, y) in a.iter().zip(b.iter()) {
-        acc |= x ^ y;
+    if !passphrase.chars().any(|c| c.is_ascii_lowercase()) {
+        return Some("Must contain a lowercase letter.");
     }
-    acc == 0
+    if !passphrase.chars().any(|c| c.is_ascii_uppercase()) {
+        return Some("Must contain an uppercase letter.");
+    }
+    if !passphrase.chars().any(|c| c.is_ascii_digit()) {
+        return Some("Must contain a digit.");
+    }
+    if !passphrase.chars().any(|c| c.is_ascii_punctuation()) {
+        return Some("Must contain a special character.");
+    }
+    None
 }
 
 #[cfg(test)]
