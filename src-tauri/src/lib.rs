@@ -544,11 +544,6 @@ async fn export_forwarding_toml(
 ) -> Result<String, String> {
     let uuid = Uuid::parse_str(&forwarding_id).map_err(|e| format!("Invalid UUID: {}", e))?;
 
-    let cipher_guard = state.cipher.lock().await;
-    let cipher = cipher_guard
-        .as_ref()
-        .ok_or_else(|| "Encryption not unlocked".to_string())?;
-
     let store = state.config_store.lock().await;
 
     let forwarding = store
@@ -562,18 +557,9 @@ async fn export_forwarding_toml(
         .ok_or_else(|| "Server group not found".to_string())?;
     let group_name = group.name.clone();
 
-    let mut config = store.build_tunnel_config(uuid)?;
-
-    if let Some(ref auth) = config.iroh.auth_token {
-        if crypto::is_encrypted(auth) {
-            config.iroh.auth_token = Some(cipher.decrypt(auth)?);
-        }
-    }
-    if let Some(ref alpn) = config.iroh.alpn_token {
-        if crypto::is_encrypted(alpn) {
-            config.iroh.alpn_token = Some(cipher.decrypt(alpn)?);
-        }
-    }
+    // Export the encrypted config values for auth_token and alpn_token as-is
+    // (do not decrypt) so secrets never leave the app in plaintext.
+    let config = store.build_tunnel_config(uuid)?;
 
     Ok(config.to_commented_toml(&forwarding_name, &group_name))
 }
