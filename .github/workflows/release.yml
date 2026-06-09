@@ -102,7 +102,10 @@ jobs:
           TAG: v${{ steps.version.outputs.version }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          release_id=$(gh api "/repos/$GITHUB_REPOSITORY/releases/tags/$TAG" --jq .id)
+          # The /releases/tags/{tag} endpoint only returns published releases; tauri-action
+          # creates a draft (no git tag on the remote yet), so find it in the full list instead.
+          release_id=$(gh api "/repos/$GITHUB_REPOSITORY/releases" --paginate \
+            --jq ".[] | select(.tag_name==\"$TAG\") | .id")
           gh api "/repos/$GITHUB_REPOSITORY/releases/$release_id/assets" --paginate \
             --jq '.[] | "\(.id)\t\(.name)"' | while IFS=$'\t' read -r id name; do
             case "$name" in
