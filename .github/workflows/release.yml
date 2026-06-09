@@ -15,10 +15,25 @@ jobs:
             args: ''
           - platform: macos-latest
             args: ''
+          - platform: ubuntu-latest
+            args: ''
 
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: install Linux dependencies
+        if: matrix.platform == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libxdo-dev \
+            libssl-dev \
+            build-essential
 
       - name: setup bun
         uses: oven-sh/setup-bun@v2
@@ -57,6 +72,28 @@ jobs:
       - name: read version
         id: version
         run: echo "version=$(jq -r .version package.json)" >> "$GITHUB_OUTPUT"
+
+      - name: insert OS into asset names
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: v${{ steps.version.outputs.version }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          release_id=$(gh api "/repos/$GITHUB_REPOSITORY/releases/tags/$TAG" --jq .id)
+          gh api "/repos/$GITHUB_REPOSITORY/releases/$release_id/assets" --paginate \
+            --jq '.[] | "\(.id)\t\(.name)"' | while IFS=$'\t' read -r id name; do
+            case "$name" in
+              *.msi|*.exe) os=windows ;;
+              *.dmg) os=macos ;;
+              *.AppImage|*.AppImage.tar.gz|*.AppImage.tar.gz.sig) os=linux ;;
+              *) continue ;;
+            esac
+            newname="${name/_${VERSION}_/_${VERSION}_${os}_}"
+            if [ "$newname" != "$name" ]; then
+              gh api -X PATCH "/repos/$GITHUB_REPOSITORY/releases/assets/$id" -f name="$newname"
+              echo "renamed $name -> $newname"
+            fi
+          done
 
       - name: publish draft release
         env:
