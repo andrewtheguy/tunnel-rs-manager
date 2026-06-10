@@ -1,5 +1,6 @@
 //! Tauri backend for tunnel-rs-manager
 
+mod age_export;
 mod config;
 mod crypto;
 mod keychain;
@@ -537,31 +538,93 @@ async fn import_configs(
 // Export Forwarding as TOML
 // ============================================================================
 
+/// Placeholder written for secret tokens when no age recipient is provided.
+const TOKEN_PLACEHOLDER: &str = "REPLACE_WITH_ENCRYPTED_TOKEN";
+
 #[tauri::command]
 async fn export_forwarding_toml(
     state: State<'_, AppState>,
     forwarding_id: String,
+    encryption_recipient: Option<String>,
 ) -> Result<String, String> {
     let uuid = Uuid::parse_str(&forwarding_id).map_err(|e| format!("Invalid UUID: {}", e))?;
 
-    let store = state.config_store.lock().await;
+    // Treat empty/whitespace-only recipient as "no recipient".
+    let recipient = encryption_recipient
+        .map(|r| r.trim().to_string())
+        .filter(|r| !r.is_empty());
 
-    let forwarding = store
-        .get_forwarding(uuid)
-        .ok_or_else(|| "Forwarding not found".to_string())?;
-    let forwarding_name = forwarding.name.clone();
-    let group_id = forwarding.server_group_id;
+    let (forwarding_name, group_name, mut config) = {
+        let store = state.config_store.lock().await;
 
-    let group = store
-        .get_server_group(group_id)
-        .ok_or_else(|| "Server group not found".to_string())?;
-    let group_name = group.name.clone();
+        let forwarding = store
+            .get_forwarding(uuid)
+            .ok_or_else(|| "Forwarding not found".to_string())?;
+        let forwarding_name = forwarding.name.clone();
+        let group_id = forwarding.server_group_id;
 
-    // Export the encrypted config values for auth_token and alpn_token as-is
-    // (do not decrypt) so secrets never leave the app in plaintext.
-    let config = store.build_tunnel_config(uuid)?;
+        let group = store
+            .get_server_group(group_id)
+            .ok_or_else(|| "Server group not found".to_string())?;
+        let group_name = group.name.clone();
 
-    Ok(config.to_commented_toml(&forwarding_name, &group_name))
+        let config = store.build_tunnel_config(uuid)?;
+        (forwarding_name, group_name, config)
+    };
+
+    match recipient {
+        Some(r) => {
+            // Validate before doing anything else so a bad key fails cleanly.
+            age_export::validate_recipient(&r)?;
+
+            // Re-encrypt the stored tokens to the age recipient. This needs the
+            // passphrase cipher to first decrypt our own at-rest AES blobs.
+            let cipher_guard = state.cipher.lock().await;
+            let cipher = cipher_guard
+                .as_ref()
+                .ok_or_else(|| "Encryption not unlocked".to_string())?;
+
+            for token in [&mut config.iroh.auth_token, &mut config.iroh.alpn_token] {
+                if let Some(value) = token {
+                    let plaintext = if crypto::is_encrypted(value) {
+                        cipher.decrypt(value)?
+                    } else {
+                        value.clone()
+                    };
+                    *token = Some(age_export::encrypt_value(&plaintext, &r)?);
+                }
+            }
+            drop(cipher_guard);
+
+            config.iroh.encryption_recipient = Some(r.clone());
+
+            let toml = config.to_commented_toml(&forwarding_name, &group_name);
+
+            // Remember the recipient to prefill the dialog next time.
+            {
+                let mut settings = state.app_settings.lock().await;
+                settings.age_recipient = Some(r);
+                settings.save()?;
+            }
+
+            Ok(toml)
+        }
+        None => {
+            // No recipient: never emit real secrets, only placeholders.
+            for token in [&mut config.iroh.auth_token, &mut config.iroh.alpn_token] {
+                if token.is_some() {
+                    *token = Some(TOKEN_PLACEHOLDER.to_string());
+                }
+            }
+            Ok(config.to_commented_toml(&forwarding_name, &group_name))
+        }
+    }
+}
+
+#[tauri::command]
+async fn get_age_recipient(state: State<'_, AppState>) -> Result<Option<String>, String> {
+    let settings = state.app_settings.lock().await;
+    Ok(settings.age_recipient.clone())
 }
 
 // ============================================================================
@@ -760,6 +823,7 @@ pub fn run() {
             export_configs,
             import_configs,
             export_forwarding_toml,
+            get_age_recipient,
             // Process commands
             list_instances,
             get_instance,

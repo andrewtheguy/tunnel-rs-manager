@@ -2,7 +2,7 @@ import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { save } from '@tauri-apps/plugin-dialog';
 import { writeTextFile } from '@tauri-apps/plugin-fs';
-import { Sidebar, ServerGroupCard, ServerGroupForm, ForwardingForm, ConfirmDialog, PassphraseDialog } from './components';
+import { Sidebar, ServerGroupCard, ServerGroupForm, ForwardingForm, ConfirmDialog, PassphraseDialog, ExportRecipientDialog } from './components';
 import { useServerGroups, useForwardings, useTunnelInstances, useBinaryPath } from './hooks';
 import type { ServerGroup, Forwarding, ServerGroupFormData, ForwardingFormData, ImportResult } from './types';
 import { serverGroupToForm, forwardingToForm } from './types';
@@ -33,6 +33,9 @@ function App() {
   const [encryptionStatus, setEncryptionStatus] = useState<'loading' | 'not_configured' | 'locked' | 'unlocked'>('loading');
   const [showPassphraseDialog, setShowPassphraseDialog] = useState(false);
   const [passphraseMode, setPassphraseMode] = useState<'setup' | 'unlock'>('setup');
+  const [exportTarget, setExportTarget] = useState<string | null>(null);
+  const [exportPrefill, setExportPrefill] = useState('');
+  const pendingExportRef = useRef<{ id: string; recipient: string } | null>(null);
 
   // Startup: check encryption status and try keychain auto-unlock
   useEffect(() => {
@@ -75,13 +78,39 @@ function App() {
     return false;
   }, [encryptionStatus]);
 
+  // Invoke the export command and write the result to a user-chosen file.
+  // Throws on failure so callers can surface the error.
+  const doExport = useCallback(async (id: string, recipient: string) => {
+    const tomlContent = await invoke<string>('export_forwarding_toml', {
+      forwardingId: id,
+      encryptionRecipient: recipient || null,
+    });
+    const forwarding = getForwarding(id);
+    const defaultName = forwarding ? `${forwarding.name}.toml` : 'forwarding.toml';
+    const filePath = await save({
+      defaultPath: defaultName,
+      filters: [{ name: 'TOML', extensions: ['toml'] }],
+    });
+    if (filePath) {
+      await writeTextFile(filePath, tomlContent);
+    }
+  }, [getForwarding]);
+
   const handlePassphraseComplete = useCallback(() => {
     setShowPassphraseDialog(false);
     setEncryptionStatus('unlocked');
-  }, []);
+    const pending = pendingExportRef.current;
+    if (pending) {
+      pendingExportRef.current = null;
+      doExport(pending.id, pending.recipient).catch(e =>
+        alert(`Failed to export forwarding config: ${e instanceof Error ? e.message : e}`),
+      );
+    }
+  }, [doExport]);
 
   const handlePassphraseCancel = useCallback(() => {
     setShowPassphraseDialog(false);
+    pendingExportRef.current = null;
   }, []);
 
   // Restore scroll position when returning to list view
@@ -348,23 +377,33 @@ function App() {
   // ── TOML export ──
 
   const handleExportForwardingToml = useCallback(async (id: string) => {
+    let prefill = '';
     try {
-      const ready = await ensureUnlocked();
-      if (!ready) return;
-      const tomlContent = await invoke<string>('export_forwarding_toml', { forwardingId: id });
-      const forwarding = getForwarding(id);
-      const defaultName = forwarding ? `${forwarding.name}.toml` : 'forwarding.toml';
-      const filePath = await save({
-        defaultPath: defaultName,
-        filters: [{ name: 'TOML', extensions: ['toml'] }],
-      });
-      if (filePath) {
-        await writeTextFile(filePath, tomlContent);
-      }
-    } catch (e) {
-      alert(`Failed to export forwarding config: ${e instanceof Error ? e.message : e}`);
+      prefill = (await invoke<string | null>('get_age_recipient')) || '';
+    } catch {
+      // Non-fatal: just start with an empty recipient.
     }
-  }, [ensureUnlocked, getForwarding]);
+    setExportPrefill(prefill);
+    setExportTarget(id);
+  }, []);
+
+  // Called when the user confirms the export dialog. An age recipient requires
+  // the cipher to be unlocked first (to decrypt secrets before re-encrypting).
+  const handleExportConfirm = useCallback(async (recipient: string) => {
+    const id = exportTarget;
+    if (!id) return;
+    if (recipient) {
+      const ready = await ensureUnlocked();
+      if (!ready) {
+        // Passphrase dialog is now showing; resume the export once it unlocks.
+        pendingExportRef.current = { id, recipient };
+        setExportTarget(null);
+        return;
+      }
+    }
+    await doExport(id, recipient);
+    setExportTarget(null);
+  }, [exportTarget, ensureUnlocked, doExport]);
 
   // ── Scroll/selection ──
 
@@ -583,6 +622,15 @@ function App() {
           mode={passphraseMode}
           onComplete={handlePassphraseComplete}
           onCancel={handlePassphraseCancel}
+        />
+      )}
+
+      {exportTarget && (
+        <ExportRecipientDialog
+          forwardingName={getForwarding(exportTarget)?.name || 'forwarding'}
+          initialRecipient={exportPrefill}
+          onExport={handleExportConfirm}
+          onCancel={() => setExportTarget(null)}
         />
       )}
     </div>
