@@ -522,13 +522,91 @@ async fn export_configs(
         .map_err(|e| format!("Failed to serialize export data: {}", e))
 }
 
+/// Returned by `import_configs` to signal the frontend to prompt for the
+/// passphrase the import file was originally encrypted with.
+const SOURCE_PASSPHRASE_REQUIRED: &str = "SOURCE_PASSPHRASE_REQUIRED";
+
 #[tauri::command]
 async fn import_configs(
     state: State<'_, AppState>,
     json: String,
+    source_passphrase: Option<String>,
 ) -> Result<ImportResult, String> {
-    let export_data: ExportData = serde_json::from_str(&json)
+    let mut export_data: ExportData = serde_json::from_str(&json)
         .map_err(|e| format!("Invalid import data: {}", e))?;
+
+    let has_encrypted = export_data
+        .config
+        .server_groups
+        .values()
+        .flat_map(|g| [g.auth_token.as_deref(), g.alpn_token.as_deref()])
+        .flatten()
+        .any(crypto::is_encrypted);
+
+    if has_encrypted {
+        // The current instance must be unlocked so tokens can be re-encrypted to it.
+        // If the current cipher already decrypts every token, the import came from
+        // this same instance/passphrase and no re-encryption is needed.
+        let needs_source = {
+            let guard = state.cipher.lock().await;
+            let current = guard
+                .as_ref()
+                .ok_or_else(|| "Unlock your passphrase before importing encrypted configs.".to_string())?;
+            export_data
+                .config
+                .server_groups
+                .values()
+                .flat_map(|g| [g.auth_token.as_deref(), g.alpn_token.as_deref()])
+                .flatten()
+                .filter(|v| crypto::is_encrypted(v))
+                .any(|v| current.decrypt(v).is_err())
+        };
+
+        if needs_source {
+            let meta = export_data.config.passphrase_meta.clone().ok_or_else(|| {
+                "Import contains encrypted tokens but no passphrase metadata to decrypt them.".to_string()
+            })?;
+
+            let passphrase = match source_passphrase {
+                Some(p) if !p.is_empty() => p,
+                _ => return Err(SOURCE_PASSPHRASE_REQUIRED.to_string()),
+            };
+
+            let salt = BASE64
+                .decode(&meta.salt)
+                .map_err(|e| format!("invalid salt in import data: {e}"))?;
+
+            let source_key = tokio::task::spawn_blocking({
+                let passphrase = passphrase.clone();
+                move || passphrase::derive_config_key(&passphrase, &salt)
+            })
+            .await
+            .map_err(|e| format!("key derivation task failed: {e}"))??;
+
+            if !passphrase::verify_instance_sig(&meta.instance, &source_key, &meta.instance_sig) {
+                return Err("Wrong source passphrase".to_string());
+            }
+
+            let source_cipher =
+                crypto::Cipher::new(source_key, meta.instance.clone(), &meta.instance_sig);
+
+            // Decrypt each token with the source cipher, re-encrypt with the current one.
+            let guard = state.cipher.lock().await;
+            let current = guard
+                .as_ref()
+                .ok_or_else(|| "Unlock your passphrase before importing encrypted configs.".to_string())?;
+            for group in export_data.config.server_groups.values_mut() {
+                for token in [&mut group.auth_token, &mut group.alpn_token] {
+                    if let Some(v) = token {
+                        if crypto::is_encrypted(v) {
+                            let plaintext = source_cipher.decrypt(v)?;
+                            *token = Some(current.encrypt(&plaintext)?);
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     let mut store = state.config_store.lock().await;
     Ok(store.import(export_data))

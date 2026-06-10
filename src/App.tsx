@@ -2,7 +2,7 @@ import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { save } from '@tauri-apps/plugin-dialog';
 import { writeTextFile } from '@tauri-apps/plugin-fs';
-import { Sidebar, ServerGroupCard, ServerGroupForm, ForwardingForm, ConfirmDialog, PassphraseDialog, ExportRecipientDialog } from './components';
+import { Sidebar, ServerGroupCard, ServerGroupForm, ForwardingForm, ConfirmDialog, PassphraseDialog, ExportRecipientDialog, SourcePassphraseDialog } from './components';
 import { useServerGroups, useForwardings, useTunnelInstances, useBinaryPath } from './hooks';
 import type { ServerGroup, Forwarding, ServerGroupFormData, ForwardingFormData, ImportResult } from './types';
 import { serverGroupToForm, forwardingToForm } from './types';
@@ -36,6 +36,9 @@ function App() {
   const [exportTarget, setExportTarget] = useState<string | null>(null);
   const [exportPrefill, setExportPrefill] = useState('');
   const pendingExportRef = useRef<{ id: string; recipient: string } | null>(null);
+  const [sourcePassphraseImport, setSourcePassphraseImport] = useState<string | null>(null);
+  const [sourcePassphraseError, setSourcePassphraseError] = useState<string | null>(null);
+  const pendingImportRef = useRef<string | null>(null);
 
   // Startup: check encryption status and try keychain auto-unlock
   useEffect(() => {
@@ -96,9 +99,57 @@ function App() {
     }
   }, [getForwarding]);
 
+  // Invoke the import command and report the result. Throws on backend errors
+  // (e.g. SOURCE_PASSPHRASE_REQUIRED) so the caller can react.
+  const doImport = useCallback(async (json: string, sourcePassphrase?: string) => {
+    const result = await invoke<ImportResult>('import_configs', {
+      json,
+      sourcePassphrase: sourcePassphrase ?? null,
+    });
+    await Promise.all([refreshGroups(), refreshForwardings()]);
+    const messages: string[] = [];
+    if (result.groups_imported > 0) messages.push(`${result.groups_imported} server group(s) imported`);
+    if (result.forwardings_imported > 0) messages.push(`${result.forwardings_imported} forwarding(s) imported`);
+    if (result.groups_skipped > 0) messages.push(`${result.groups_skipped} server group(s) skipped`);
+    if (result.forwardings_skipped > 0) messages.push(`${result.forwardings_skipped} forwarding(s) skipped`);
+    if (result.errors.length > 0) messages.push(`Warnings: ${result.errors.join(', ')}`);
+    if (result.success) {
+      alert(`Import completed:\n${messages.join('\n')}`);
+    } else {
+      alert(`Import failed:\n${result.errors.join('\n')}`);
+    }
+  }, [refreshGroups, refreshForwardings]);
+
+  // Run an import, prompting for the source passphrase when the file's secrets
+  // were encrypted under a different instance/passphrase.
+  const runImport = useCallback(async (json: string, sourcePassphrase?: string) => {
+    try {
+      await doImport(json, sourcePassphrase);
+      setSourcePassphraseImport(null);
+      setSourcePassphraseError(null);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes('SOURCE_PASSPHRASE_REQUIRED')) {
+        setSourcePassphraseError(null);
+        setSourcePassphraseImport(json);
+      } else if (msg.includes('Wrong source passphrase')) {
+        setSourcePassphraseError('Wrong passphrase. Please try again.');
+        setSourcePassphraseImport(json);
+      } else {
+        setSourcePassphraseImport(null);
+        alert(`Failed to import configs: ${msg}`);
+      }
+    }
+  }, [doImport]);
+
   const handlePassphraseComplete = useCallback(() => {
     setShowPassphraseDialog(false);
     setEncryptionStatus('unlocked');
+    const pendingImport = pendingImportRef.current;
+    if (pendingImport) {
+      pendingImportRef.current = null;
+      runImport(pendingImport);
+    }
     const pending = pendingExportRef.current;
     if (pending) {
       pendingExportRef.current = null;
@@ -106,11 +157,12 @@ function App() {
         alert(`Failed to export forwarding config: ${e instanceof Error ? e.message : e}`),
       );
     }
-  }, [doExport]);
+  }, [doExport, runImport]);
 
   const handlePassphraseCancel = useCallback(() => {
     setShowPassphraseDialog(false);
     pendingExportRef.current = null;
+    pendingImportRef.current = null;
   }, []);
 
   // Restore scroll position when returning to list view
@@ -361,27 +413,38 @@ function App() {
     const file = e.target.files?.[0];
     if (!file) return;
 
+    let json: string;
     try {
-      const json = await file.text();
-      const result = await invoke<ImportResult>('import_configs', { json });
-      await Promise.all([refreshGroups(), refreshForwardings()]);
-      const messages: string[] = [];
-      if (result.groups_imported > 0) messages.push(`${result.groups_imported} server group(s) imported`);
-      if (result.forwardings_imported > 0) messages.push(`${result.forwardings_imported} forwarding(s) imported`);
-      if (result.groups_skipped > 0) messages.push(`${result.groups_skipped} server group(s) skipped`);
-      if (result.forwardings_skipped > 0) messages.push(`${result.forwardings_skipped} forwarding(s) skipped`);
-      if (result.errors.length > 0) messages.push(`Warnings: ${result.errors.join(', ')}`);
-      if (result.success) {
-        alert(`Import completed:\n${messages.join('\n')}`);
-      } else {
-        alert(`Import failed:\n${result.errors.join('\n')}`);
-      }
-    } catch (e) {
-      alert(`Failed to import configs: ${e instanceof Error ? e.message : e}`);
+      json = await file.text();
+    } catch (err) {
+      alert(`Failed to read import file: ${err instanceof Error ? err.message : err}`);
+      return;
     } finally {
       e.target.value = '';
     }
-  }, [refreshGroups, refreshForwardings]);
+
+    // Encrypted tokens require this instance to be unlocked so they can be
+    // re-encrypted to the current key. Resume the import once unlocked.
+    if (json.includes('$TM;')) {
+      const ready = await ensureUnlocked();
+      if (!ready) {
+        pendingImportRef.current = json;
+        return;
+      }
+    }
+    await runImport(json);
+  }, [ensureUnlocked, runImport]);
+
+  const handleSourcePassphraseSubmit = useCallback(async (passphrase: string) => {
+    const json = sourcePassphraseImport;
+    if (!json) return;
+    await runImport(json, passphrase);
+  }, [sourcePassphraseImport, runImport]);
+
+  const handleSourcePassphraseCancel = useCallback(() => {
+    setSourcePassphraseImport(null);
+    setSourcePassphraseError(null);
+  }, []);
 
   // ── TOML export ──
 
@@ -645,6 +708,14 @@ function App() {
           encryptionConfigured={encryptionStatus !== 'not_configured'}
           onExport={handleExportConfirm}
           onCancel={() => setExportTarget(null)}
+        />
+      )}
+
+      {sourcePassphraseImport && (
+        <SourcePassphraseDialog
+          error={sourcePassphraseError}
+          onSubmit={handleSourcePassphraseSubmit}
+          onCancel={handleSourcePassphraseCancel}
         />
       )}
     </div>
