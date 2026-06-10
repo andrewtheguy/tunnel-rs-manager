@@ -4,6 +4,8 @@ import './PassphraseDialog.css';
 interface ExportRecipientDialogProps {
   forwardingName: string;
   initialRecipient: string;
+  /** Whether a passphrase is set up. Encrypted export needs it; if false the field is disabled. */
+  encryptionConfigured: boolean;
   /** Resolves once the export (or unlock hand-off) succeeds; rejects to show an error. */
   onExport: (recipient: string) => Promise<void>;
   onCancel: () => void;
@@ -12,6 +14,7 @@ interface ExportRecipientDialogProps {
 export function ExportRecipientDialog({
   forwardingName,
   initialRecipient,
+  encryptionConfigured,
   onExport,
   onCancel,
 }: ExportRecipientDialogProps) {
@@ -44,7 +47,9 @@ export function ExportRecipientDialog({
     [onExport],
   );
 
-  const trimmed = recipient.trim();
+  // Without a passphrase there is no cipher to decrypt the stored tokens, so
+  // encrypted export is impossible — force the unencrypted path.
+  const trimmed = encryptionConfigured ? recipient.trim() : '';
 
   return (
     <div className="confirm-overlay">
@@ -62,20 +67,30 @@ export function ExportRecipientDialog({
         >
           <h3>Export config</h3>
           <p className="passphrase-description">
-            Exporting <strong>{forwardingName}</strong> as a tunnel-rs config. Enter an age
-            recipient (public key, <code>age1…</code>) to include the auth and ALPN tokens
-            encrypted to that key. Leave it blank to export placeholder values only.
+            Exporting <strong>{forwardingName}</strong> as a tunnel-rs config.{' '}
+            {encryptionConfigured ? (
+              <>
+                Enter an age recipient (public key, <code>age1…</code>) to include the auth and
+                ALPN tokens encrypted to that key. Leave it blank to export placeholder values
+                only.
+              </>
+            ) : (
+              <>
+                Set up a passphrase first to export encrypted secrets. For now, only placeholder
+                values will be exported.
+              </>
+            )}
           </p>
 
           <label className="passphrase-field">
             <span>Age recipient</span>
             <input
               type="text"
-              value={recipient}
+              value={encryptionConfigured ? recipient : ''}
               onChange={e => setRecipient(e.target.value)}
-              placeholder="age1... (optional)"
-              disabled={loading}
-              autoFocus
+              placeholder={encryptionConfigured ? 'age1... (optional)' : 'Set up a passphrase to enable'}
+              disabled={loading || !encryptionConfigured}
+              autoFocus={encryptionConfigured}
               spellCheck={false}
               autoCapitalize="none"
             />

@@ -629,6 +629,7 @@ function App() {
         <ExportRecipientDialog
           forwardingName={getForwarding(exportTarget)?.name || 'forwarding'}
           initialRecipient={exportPrefill}
+          encryptionConfigured={encryptionStatus !== 'not_configured'}
           onExport={handleExportConfirm}
           onCancel={() => setExportTarget(null)}
         />
