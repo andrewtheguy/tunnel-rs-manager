@@ -391,14 +391,9 @@ impl ConfigStore {
         Ok(id)
     }
 
-    /// Delete a server group by ID
-    /// Returns error if the group has forwardings
+    /// Delete a server group by ID, cascading to all forwardings it contains.
     pub fn delete_server_group(&mut self, id: Uuid) -> Result<(), String> {
-        let has_forwardings = self.forwardings.values().any(|f| f.server_group_id == id);
-        if has_forwardings {
-            return Err("Cannot delete server group with existing forwardings. Delete all forwardings first.".to_string());
-        }
-
+        self.forwardings.retain(|_, f| f.server_group_id != id);
         self.server_groups.remove(&id);
         self.save()
     }

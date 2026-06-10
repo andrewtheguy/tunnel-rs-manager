@@ -26,7 +26,7 @@ function App() {
   const [editingGroup, setEditingGroup] = useState<ServerGroup | null>(null);
   const [editingForwarding, setEditingForwarding] = useState<Forwarding | null>(null);
   const [addForwardingToGroupId, setAddForwardingToGroupId] = useState<string | null>(null);
-  const [pendingDelete, setPendingDelete] = useState<{ type: 'group' | 'forwarding'; id: string; name: string } | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<{ type: 'group' | 'forwarding'; id: string; name: string; count?: number } | null>(null);
   const [deleting, setDeleting] = useState(false);
 
   // Passphrase state
@@ -190,8 +190,17 @@ function App() {
 
   const handleDeleteGroup = useCallback((id: string) => {
     const group = getServerGroup(id);
-    setPendingDelete({ type: 'group', id, name: group?.name || 'Server Group' });
-  }, [getServerGroup]);
+    const groupForwardings = getForwardingsByGroup(id);
+    const hasRunning = groupForwardings.some(f => {
+      const instance = instances.find(i => i.forwarding_id === f.id);
+      return instance && (instance.status === 'running' || instance.status === 'starting' || instance.status === 'reconnecting');
+    });
+    if (hasRunning) {
+      alert('Cannot delete a server group with running forwardings. Stop them first.');
+      return;
+    }
+    setPendingDelete({ type: 'group', id, name: group?.name || 'Server Group', count: groupForwardings.length });
+  }, [getServerGroup, getForwardingsByGroup, instances]);
 
   const confirmDeleteGroup = useCallback(async (id: string) => {
     try {
@@ -610,7 +619,11 @@ function App() {
 
       {pendingDelete && (
         <ConfirmDialog
-          message={`Are you sure you want to delete "${pendingDelete.name}"?`}
+          message={
+            pendingDelete.type === 'group' && pendingDelete.count
+              ? `Delete "${pendingDelete.name}" and its ${pendingDelete.count} forwarding${pendingDelete.count === 1 ? '' : 's'}? This cannot be undone.`
+              : `Are you sure you want to delete "${pendingDelete.name}"?`
+          }
           onConfirm={handleConfirmDelete}
           onCancel={handleCancelDelete}
           loading={deleting}
