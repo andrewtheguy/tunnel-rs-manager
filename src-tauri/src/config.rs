@@ -58,6 +58,10 @@ pub struct IrohConfig {
     pub alpn_token_file: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transport: Option<TransportConfig>,
+    /// Age recipient (public key) recorded in exported configs so the secrets
+    /// below can be re-encrypted with `tunnel-rs config-encryption encrypt-value`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encryption_recipient: Option<String>,
 }
 
 /// Full tunnel-rs client configuration
@@ -86,6 +90,7 @@ impl TunnelClientConfig {
                 alpn_token: None,
                 alpn_token_file: None,
                 transport: None,
+                encryption_recipient: None,
             },
         }
     }
@@ -112,6 +117,14 @@ impl TunnelClientConfig {
 
         out.push_str("# The node ID of the tunnel server to connect to\n");
         out.push_str(&format!("server_node_id = {}\n", toml::Value::String(self.iroh.server_node_id.clone())));
+
+        let encrypted = self.iroh.encryption_recipient.is_some();
+        if let Some(ref v) = self.iroh.encryption_recipient {
+            out.push_str("\n# Age recipient (public key) the secrets below are encrypted to\n");
+            out.push_str(&format!("encryption_recipient = {}\n", toml::Value::String(v.clone())));
+            out.push_str("# Age identity (private key) file used to decrypt the secrets at runtime\n");
+            out.push_str("# encryption_key_file = \"~/.config/tunnel-rs/age.key\"\n");
+        }
 
         if let Some(ref v) = self.iroh.request_source {
             out.push_str("\n# Local address to listen on (e.g. tcp://127.0.0.1:8080)\n");
@@ -140,7 +153,12 @@ impl TunnelClientConfig {
         }
 
         if let Some(ref v) = self.iroh.auth_token {
-            out.push_str("\n# Authentication token (secret — do not share)\n");
+            if encrypted {
+                out.push_str("\n# Authentication token (age-encrypted — safe to share with the recipient)\n");
+            } else {
+                out.push_str("\n# Authentication token — placeholder only. Replace with an age-encrypted value:\n");
+                out.push_str("#   tunnel-rs config-encryption encrypt-value --recipient age1... <token>\n");
+            }
             out.push_str(&format!("auth_token = {}\n", toml::Value::String(v.clone())));
         }
 
@@ -150,7 +168,12 @@ impl TunnelClientConfig {
         }
 
         if let Some(ref v) = self.iroh.alpn_token {
-            out.push_str("\n# ALPN protocol token (secret — do not share)\n");
+            if encrypted {
+                out.push_str("\n# ALPN protocol token (age-encrypted — safe to share with the recipient)\n");
+            } else {
+                out.push_str("\n# ALPN protocol token — placeholder only. Replace with an age-encrypted value:\n");
+                out.push_str("#   tunnel-rs config-encryption encrypt-value --recipient age1... <token>\n");
+            }
             out.push_str(&format!("alpn_token = {}\n", toml::Value::String(v.clone())));
         }
 
@@ -256,6 +279,10 @@ fn app_data_dir() -> Result<PathBuf, String> {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AppSettings {
     pub binary_path: Option<String>,
+    /// Last age recipient (public key) used to export an encrypted config.
+    /// Remembered so the export dialog can prefill it next time.
+    #[serde(default)]
+    pub age_recipient: Option<String>,
 }
 
 impl AppSettings {
@@ -364,14 +391,9 @@ impl ConfigStore {
         Ok(id)
     }
 
-    /// Delete a server group by ID
-    /// Returns error if the group has forwardings
+    /// Delete a server group by ID, cascading to all forwardings it contains.
     pub fn delete_server_group(&mut self, id: Uuid) -> Result<(), String> {
-        let has_forwardings = self.forwardings.values().any(|f| f.server_group_id == id);
-        if has_forwardings {
-            return Err("Cannot delete server group with existing forwardings. Delete all forwardings first.".to_string());
-        }
-
+        self.forwardings.retain(|_, f| f.server_group_id != id);
         self.server_groups.remove(&id);
         self.save()
     }

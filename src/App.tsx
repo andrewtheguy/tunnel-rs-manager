@@ -2,7 +2,7 @@ import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { save } from '@tauri-apps/plugin-dialog';
 import { writeTextFile } from '@tauri-apps/plugin-fs';
-import { Sidebar, ServerGroupCard, ServerGroupForm, ForwardingForm, ConfirmDialog, PassphraseDialog } from './components';
+import { Sidebar, ServerGroupCard, ServerGroupForm, ForwardingForm, ConfirmDialog, PassphraseDialog, ExportRecipientDialog, SourcePassphraseDialog } from './components';
 import { useServerGroups, useForwardings, useTunnelInstances, useBinaryPath } from './hooks';
 import type { ServerGroup, Forwarding, ServerGroupFormData, ForwardingFormData, ImportResult } from './types';
 import { serverGroupToForm, forwardingToForm } from './types';
@@ -26,13 +26,19 @@ function App() {
   const [editingGroup, setEditingGroup] = useState<ServerGroup | null>(null);
   const [editingForwarding, setEditingForwarding] = useState<Forwarding | null>(null);
   const [addForwardingToGroupId, setAddForwardingToGroupId] = useState<string | null>(null);
-  const [pendingDelete, setPendingDelete] = useState<{ type: 'group' | 'forwarding'; id: string; name: string } | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<{ type: 'group' | 'forwarding'; id: string; name: string; count?: number } | null>(null);
   const [deleting, setDeleting] = useState(false);
 
   // Passphrase state
   const [encryptionStatus, setEncryptionStatus] = useState<'loading' | 'not_configured' | 'locked' | 'unlocked'>('loading');
   const [showPassphraseDialog, setShowPassphraseDialog] = useState(false);
   const [passphraseMode, setPassphraseMode] = useState<'setup' | 'unlock'>('setup');
+  const [exportTarget, setExportTarget] = useState<string | null>(null);
+  const [exportPrefill, setExportPrefill] = useState('');
+  const pendingExportRef = useRef<{ id: string; recipient: string } | null>(null);
+  const [sourcePassphraseImport, setSourcePassphraseImport] = useState<string | null>(null);
+  const [sourcePassphraseError, setSourcePassphraseError] = useState<string | null>(null);
+  const pendingImportRef = useRef<string | null>(null);
 
   // Startup: check encryption status and try keychain auto-unlock
   useEffect(() => {
@@ -75,13 +81,88 @@ function App() {
     return false;
   }, [encryptionStatus]);
 
+  // Invoke the export command and write the result to a user-chosen file.
+  // Throws on failure so callers can surface the error.
+  const doExport = useCallback(async (id: string, recipient: string) => {
+    const tomlContent = await invoke<string>('export_forwarding_toml', {
+      forwardingId: id,
+      encryptionRecipient: recipient || null,
+    });
+    const forwarding = getForwarding(id);
+    const defaultName = forwarding ? `${forwarding.name}.toml` : 'forwarding.toml';
+    const filePath = await save({
+      defaultPath: defaultName,
+      filters: [{ name: 'TOML', extensions: ['toml'] }],
+    });
+    if (filePath) {
+      await writeTextFile(filePath, tomlContent);
+    }
+  }, [getForwarding]);
+
+  // Invoke the import command and report the result. Throws on backend errors
+  // (e.g. SOURCE_PASSPHRASE_REQUIRED) so the caller can react.
+  const doImport = useCallback(async (json: string, sourcePassphrase?: string) => {
+    const result = await invoke<ImportResult>('import_configs', {
+      json,
+      sourcePassphrase: sourcePassphrase ?? null,
+    });
+    await Promise.all([refreshGroups(), refreshForwardings()]);
+    const messages: string[] = [];
+    if (result.groups_imported > 0) messages.push(`${result.groups_imported} server group(s) imported`);
+    if (result.forwardings_imported > 0) messages.push(`${result.forwardings_imported} forwarding(s) imported`);
+    if (result.groups_skipped > 0) messages.push(`${result.groups_skipped} server group(s) skipped`);
+    if (result.forwardings_skipped > 0) messages.push(`${result.forwardings_skipped} forwarding(s) skipped`);
+    if (result.errors.length > 0) messages.push(`Warnings: ${result.errors.join(', ')}`);
+    if (result.success) {
+      alert(`Import completed:\n${messages.join('\n')}`);
+    } else {
+      alert(`Import failed:\n${result.errors.join('\n')}`);
+    }
+  }, [refreshGroups, refreshForwardings]);
+
+  // Run an import, prompting for the source passphrase when the file's secrets
+  // were encrypted under a different instance/passphrase.
+  const runImport = useCallback(async (json: string, sourcePassphrase?: string) => {
+    try {
+      await doImport(json, sourcePassphrase);
+      setSourcePassphraseImport(null);
+      setSourcePassphraseError(null);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes('SOURCE_PASSPHRASE_REQUIRED')) {
+        setSourcePassphraseError(null);
+        setSourcePassphraseImport(json);
+      } else if (msg.includes('Wrong source passphrase')) {
+        setSourcePassphraseError('Wrong passphrase. Please try again.');
+        setSourcePassphraseImport(json);
+      } else {
+        setSourcePassphraseImport(null);
+        alert(`Failed to import configs: ${msg}`);
+      }
+    }
+  }, [doImport]);
+
   const handlePassphraseComplete = useCallback(() => {
     setShowPassphraseDialog(false);
     setEncryptionStatus('unlocked');
-  }, []);
+    const pendingImport = pendingImportRef.current;
+    if (pendingImport) {
+      pendingImportRef.current = null;
+      runImport(pendingImport);
+    }
+    const pending = pendingExportRef.current;
+    if (pending) {
+      pendingExportRef.current = null;
+      doExport(pending.id, pending.recipient).catch(e =>
+        alert(`Failed to export forwarding config: ${e instanceof Error ? e.message : e}`),
+      );
+    }
+  }, [doExport, runImport]);
 
   const handlePassphraseCancel = useCallback(() => {
     setShowPassphraseDialog(false);
+    pendingExportRef.current = null;
+    pendingImportRef.current = null;
   }, []);
 
   // Restore scroll position when returning to list view
@@ -161,8 +242,17 @@ function App() {
 
   const handleDeleteGroup = useCallback((id: string) => {
     const group = getServerGroup(id);
-    setPendingDelete({ type: 'group', id, name: group?.name || 'Server Group' });
-  }, [getServerGroup]);
+    const groupForwardings = getForwardingsByGroup(id);
+    const hasRunning = groupForwardings.some(f => {
+      const instance = instances.find(i => i.forwarding_id === f.id);
+      return instance && (instance.status === 'running' || instance.status === 'starting' || instance.status === 'reconnecting');
+    });
+    if (hasRunning) {
+      alert('Cannot delete a server group with running forwardings. Stop them first.');
+      return;
+    }
+    setPendingDelete({ type: 'group', id, name: group?.name || 'Server Group', count: groupForwardings.length });
+  }, [getServerGroup, getForwardingsByGroup, instances]);
 
   const confirmDeleteGroup = useCallback(async (id: string) => {
     try {
@@ -323,48 +413,69 @@ function App() {
     const file = e.target.files?.[0];
     if (!file) return;
 
+    let json: string;
     try {
-      const json = await file.text();
-      const result = await invoke<ImportResult>('import_configs', { json });
-      await Promise.all([refreshGroups(), refreshForwardings()]);
-      const messages: string[] = [];
-      if (result.groups_imported > 0) messages.push(`${result.groups_imported} server group(s) imported`);
-      if (result.forwardings_imported > 0) messages.push(`${result.forwardings_imported} forwarding(s) imported`);
-      if (result.groups_skipped > 0) messages.push(`${result.groups_skipped} server group(s) skipped`);
-      if (result.forwardings_skipped > 0) messages.push(`${result.forwardings_skipped} forwarding(s) skipped`);
-      if (result.errors.length > 0) messages.push(`Warnings: ${result.errors.join(', ')}`);
-      if (result.success) {
-        alert(`Import completed:\n${messages.join('\n')}`);
-      } else {
-        alert(`Import failed:\n${result.errors.join('\n')}`);
-      }
-    } catch (e) {
-      alert(`Failed to import configs: ${e instanceof Error ? e.message : e}`);
+      json = await file.text();
+    } catch (err) {
+      alert(`Failed to read import file: ${err instanceof Error ? err.message : err}`);
+      return;
     } finally {
       e.target.value = '';
     }
-  }, [refreshGroups, refreshForwardings]);
+
+    // Encrypted tokens require this instance to be unlocked so they can be
+    // re-encrypted to the current key. Resume the import once unlocked.
+    if (json.includes('$TM;')) {
+      const ready = await ensureUnlocked();
+      if (!ready) {
+        pendingImportRef.current = json;
+        return;
+      }
+    }
+    await runImport(json);
+  }, [ensureUnlocked, runImport]);
+
+  const handleSourcePassphraseSubmit = useCallback(async (passphrase: string) => {
+    const json = sourcePassphraseImport;
+    if (!json) return;
+    await runImport(json, passphrase);
+  }, [sourcePassphraseImport, runImport]);
+
+  const handleSourcePassphraseCancel = useCallback(() => {
+    setSourcePassphraseImport(null);
+    setSourcePassphraseError(null);
+  }, []);
 
   // ── TOML export ──
 
   const handleExportForwardingToml = useCallback(async (id: string) => {
+    let prefill = '';
     try {
-      const ready = await ensureUnlocked();
-      if (!ready) return;
-      const tomlContent = await invoke<string>('export_forwarding_toml', { forwardingId: id });
-      const forwarding = getForwarding(id);
-      const defaultName = forwarding ? `${forwarding.name}.toml` : 'forwarding.toml';
-      const filePath = await save({
-        defaultPath: defaultName,
-        filters: [{ name: 'TOML', extensions: ['toml'] }],
-      });
-      if (filePath) {
-        await writeTextFile(filePath, tomlContent);
-      }
-    } catch (e) {
-      alert(`Failed to export forwarding config: ${e instanceof Error ? e.message : e}`);
+      prefill = (await invoke<string | null>('get_age_recipient')) || '';
+    } catch {
+      // Non-fatal: just start with an empty recipient.
     }
-  }, [ensureUnlocked, getForwarding]);
+    setExportPrefill(prefill);
+    setExportTarget(id);
+  }, []);
+
+  // Called when the user confirms the export dialog. An age recipient requires
+  // the cipher to be unlocked first (to decrypt secrets before re-encrypting).
+  const handleExportConfirm = useCallback(async (recipient: string) => {
+    const id = exportTarget;
+    if (!id) return;
+    if (recipient) {
+      const ready = await ensureUnlocked();
+      if (!ready) {
+        // Passphrase dialog is now showing; resume the export once it unlocks.
+        pendingExportRef.current = { id, recipient };
+        setExportTarget(null);
+        return;
+      }
+    }
+    await doExport(id, recipient);
+    setExportTarget(null);
+  }, [exportTarget, ensureUnlocked, doExport]);
 
   // ── Scroll/selection ──
 
@@ -571,7 +682,11 @@ function App() {
 
       {pendingDelete && (
         <ConfirmDialog
-          message={`Are you sure you want to delete "${pendingDelete.name}"?`}
+          message={
+            pendingDelete.type === 'group' && pendingDelete.count
+              ? `Delete "${pendingDelete.name}" and its ${pendingDelete.count} forwarding${pendingDelete.count === 1 ? '' : 's'}? This cannot be undone.`
+              : `Are you sure you want to delete "${pendingDelete.name}"?`
+          }
           onConfirm={handleConfirmDelete}
           onCancel={handleCancelDelete}
           loading={deleting}
@@ -583,6 +698,24 @@ function App() {
           mode={passphraseMode}
           onComplete={handlePassphraseComplete}
           onCancel={handlePassphraseCancel}
+        />
+      )}
+
+      {exportTarget && (
+        <ExportRecipientDialog
+          forwardingName={getForwarding(exportTarget)?.name || 'forwarding'}
+          initialRecipient={exportPrefill}
+          encryptionConfigured={encryptionStatus !== 'not_configured'}
+          onExport={handleExportConfirm}
+          onCancel={() => setExportTarget(null)}
+        />
+      )}
+
+      {sourcePassphraseImport && (
+        <SourcePassphraseDialog
+          error={sourcePassphraseError}
+          onSubmit={handleSourcePassphraseSubmit}
+          onCancel={handleSourcePassphraseCancel}
         />
       )}
     </div>

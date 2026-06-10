@@ -82,13 +82,11 @@ export function ServerGroupCard({
                     <button
                         className="btn-icon btn-danger"
                         onClick={onDelete}
-                        disabled={hasRunningForwarding || forwardings.length > 0 || loading}
+                        disabled={hasRunningForwarding || loading}
                         title={
                             hasRunningForwarding
                                 ? "Stop all forwardings before deleting"
-                                : forwardings.length > 0
-                                    ? "Delete all forwardings first"
-                                    : "Delete server group"
+                                : "Delete server group"
                         }
                     >
                         <TrashIcon />

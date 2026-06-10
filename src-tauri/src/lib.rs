@@ -1,5 +1,6 @@
 //! Tauri backend for tunnel-rs-manager
 
+mod age_export;
 mod config;
 mod crypto;
 mod keychain;
@@ -521,13 +522,91 @@ async fn export_configs(
         .map_err(|e| format!("Failed to serialize export data: {}", e))
 }
 
+/// Returned by `import_configs` to signal the frontend to prompt for the
+/// passphrase the import file was originally encrypted with.
+const SOURCE_PASSPHRASE_REQUIRED: &str = "SOURCE_PASSPHRASE_REQUIRED";
+
 #[tauri::command]
 async fn import_configs(
     state: State<'_, AppState>,
     json: String,
+    source_passphrase: Option<String>,
 ) -> Result<ImportResult, String> {
-    let export_data: ExportData = serde_json::from_str(&json)
+    let mut export_data: ExportData = serde_json::from_str(&json)
         .map_err(|e| format!("Invalid import data: {}", e))?;
+
+    let has_encrypted = export_data
+        .config
+        .server_groups
+        .values()
+        .flat_map(|g| [g.auth_token.as_deref(), g.alpn_token.as_deref()])
+        .flatten()
+        .any(crypto::is_encrypted);
+
+    if has_encrypted {
+        // The current instance must be unlocked so tokens can be re-encrypted to it.
+        // If the current cipher already decrypts every token, the import came from
+        // this same instance/passphrase and no re-encryption is needed.
+        let needs_source = {
+            let guard = state.cipher.lock().await;
+            let current = guard
+                .as_ref()
+                .ok_or_else(|| "Unlock your passphrase before importing encrypted configs.".to_string())?;
+            export_data
+                .config
+                .server_groups
+                .values()
+                .flat_map(|g| [g.auth_token.as_deref(), g.alpn_token.as_deref()])
+                .flatten()
+                .filter(|v| crypto::is_encrypted(v))
+                .any(|v| current.decrypt(v).is_err())
+        };
+
+        if needs_source {
+            let meta = export_data.config.passphrase_meta.clone().ok_or_else(|| {
+                "Import contains encrypted tokens but no passphrase metadata to decrypt them.".to_string()
+            })?;
+
+            let passphrase = match source_passphrase {
+                Some(p) if !p.is_empty() => p,
+                _ => return Err(SOURCE_PASSPHRASE_REQUIRED.to_string()),
+            };
+
+            let salt = BASE64
+                .decode(&meta.salt)
+                .map_err(|e| format!("invalid salt in import data: {e}"))?;
+
+            let source_key = tokio::task::spawn_blocking({
+                let passphrase = passphrase.clone();
+                move || passphrase::derive_config_key(&passphrase, &salt)
+            })
+            .await
+            .map_err(|e| format!("key derivation task failed: {e}"))??;
+
+            if !passphrase::verify_instance_sig(&meta.instance, &source_key, &meta.instance_sig) {
+                return Err("Wrong source passphrase".to_string());
+            }
+
+            let source_cipher =
+                crypto::Cipher::new(source_key, meta.instance.clone(), &meta.instance_sig);
+
+            // Decrypt each token with the source cipher, re-encrypt with the current one.
+            let guard = state.cipher.lock().await;
+            let current = guard
+                .as_ref()
+                .ok_or_else(|| "Unlock your passphrase before importing encrypted configs.".to_string())?;
+            for group in export_data.config.server_groups.values_mut() {
+                for token in [&mut group.auth_token, &mut group.alpn_token] {
+                    if let Some(v) = token {
+                        if crypto::is_encrypted(v) {
+                            let plaintext = source_cipher.decrypt(v)?;
+                            *token = Some(current.encrypt(&plaintext)?);
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     let mut store = state.config_store.lock().await;
     Ok(store.import(export_data))
@@ -537,31 +616,93 @@ async fn import_configs(
 // Export Forwarding as TOML
 // ============================================================================
 
+/// Placeholder written for secret tokens when no age recipient is provided.
+const TOKEN_PLACEHOLDER: &str = "REPLACE_WITH_ENCRYPTED_TOKEN";
+
 #[tauri::command]
 async fn export_forwarding_toml(
     state: State<'_, AppState>,
     forwarding_id: String,
+    encryption_recipient: Option<String>,
 ) -> Result<String, String> {
     let uuid = Uuid::parse_str(&forwarding_id).map_err(|e| format!("Invalid UUID: {}", e))?;
 
-    let store = state.config_store.lock().await;
+    // Treat empty/whitespace-only recipient as "no recipient".
+    let recipient = encryption_recipient
+        .map(|r| r.trim().to_string())
+        .filter(|r| !r.is_empty());
 
-    let forwarding = store
-        .get_forwarding(uuid)
-        .ok_or_else(|| "Forwarding not found".to_string())?;
-    let forwarding_name = forwarding.name.clone();
-    let group_id = forwarding.server_group_id;
+    let (forwarding_name, group_name, mut config) = {
+        let store = state.config_store.lock().await;
 
-    let group = store
-        .get_server_group(group_id)
-        .ok_or_else(|| "Server group not found".to_string())?;
-    let group_name = group.name.clone();
+        let forwarding = store
+            .get_forwarding(uuid)
+            .ok_or_else(|| "Forwarding not found".to_string())?;
+        let forwarding_name = forwarding.name.clone();
+        let group_id = forwarding.server_group_id;
 
-    // Export the encrypted config values for auth_token and alpn_token as-is
-    // (do not decrypt) so secrets never leave the app in plaintext.
-    let config = store.build_tunnel_config(uuid)?;
+        let group = store
+            .get_server_group(group_id)
+            .ok_or_else(|| "Server group not found".to_string())?;
+        let group_name = group.name.clone();
 
-    Ok(config.to_commented_toml(&forwarding_name, &group_name))
+        let config = store.build_tunnel_config(uuid)?;
+        (forwarding_name, group_name, config)
+    };
+
+    match recipient {
+        Some(r) => {
+            // Validate before doing anything else so a bad key fails cleanly.
+            age_export::validate_recipient(&r)?;
+
+            // Re-encrypt the stored tokens to the age recipient. This needs the
+            // passphrase cipher to first decrypt our own at-rest AES blobs.
+            let cipher_guard = state.cipher.lock().await;
+            let cipher = cipher_guard
+                .as_ref()
+                .ok_or_else(|| "Encryption not unlocked".to_string())?;
+
+            for token in [&mut config.iroh.auth_token, &mut config.iroh.alpn_token] {
+                if let Some(value) = token {
+                    let plaintext = if crypto::is_encrypted(value) {
+                        cipher.decrypt(value)?
+                    } else {
+                        value.clone()
+                    };
+                    *token = Some(age_export::encrypt_value(&plaintext, &r)?);
+                }
+            }
+            drop(cipher_guard);
+
+            config.iroh.encryption_recipient = Some(r.clone());
+
+            let toml = config.to_commented_toml(&forwarding_name, &group_name);
+
+            // Remember the recipient to prefill the dialog next time.
+            {
+                let mut settings = state.app_settings.lock().await;
+                settings.age_recipient = Some(r);
+                settings.save()?;
+            }
+
+            Ok(toml)
+        }
+        None => {
+            // No recipient: never emit real secrets, only placeholders.
+            for token in [&mut config.iroh.auth_token, &mut config.iroh.alpn_token] {
+                if token.is_some() {
+                    *token = Some(TOKEN_PLACEHOLDER.to_string());
+                }
+            }
+            Ok(config.to_commented_toml(&forwarding_name, &group_name))
+        }
+    }
+}
+
+#[tauri::command]
+async fn get_age_recipient(state: State<'_, AppState>) -> Result<Option<String>, String> {
+    let settings = state.app_settings.lock().await;
+    Ok(settings.age_recipient.clone())
 }
 
 // ============================================================================
@@ -760,6 +901,7 @@ pub fn run() {
             export_configs,
             import_configs,
             export_forwarding_toml,
+            get_age_recipient,
             // Process commands
             list_instances,
             get_instance,
