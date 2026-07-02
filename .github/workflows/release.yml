@@ -126,9 +126,13 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: v${{ steps.version.outputs.version }}
         run: |
+          # A draft release has no git tag on the remote yet, so `gh release edit <tag>`
+          # (and any tag-based lookup) fails with "release not found". Find it by id in the
+          # full list and PATCH it directly; setting draft=false is what creates the tag.
+          release_id=$(gh api "/repos/$GITHUB_REPOSITORY/releases" --paginate \
+            --jq ".[] | select(.tag_name==\"$TAG\") | .id")
           NOTES=$(gh api -X POST "/repos/$GITHUB_REPOSITORY/releases/generate-notes" \
             -f tag_name="$TAG" --jq .body)
-          gh release edit "$TAG" \
-            --draft=false \
-            --notes "$NOTES" \
-            --repo "$GITHUB_REPOSITORY"
+          gh api -X PATCH "/repos/$GITHUB_REPOSITORY/releases/$release_id" \
+            -F draft=false \
+            -f body="$NOTES"
