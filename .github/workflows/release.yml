@@ -17,6 +17,20 @@ jobs:
         id: version
         run: echo "version=$(jq -r .version package.json)" >> "$GITHUB_OUTPUT"
 
+      - name: verify version files are in sync
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          # tauri-action derives the release tag from the tauri app config, NOT package.json.
+          # If these drift, tauri-action creates a release under the wrong tag and the publish
+          # job can't find the tag it expects. Fail fast instead of shipping a broken release.
+          tauri_version=$(jq -r .version src-tauri/tauri.conf.json)
+          cargo_version=$(grep -m1 '^version' src-tauri/Cargo.toml | sed -E 's/.*"(.*)".*/\1/')
+          if [ "$tauri_version" != "$VERSION" ] || [ "$cargo_version" != "$VERSION" ]; then
+            echo "::error::version mismatch: package.json=$VERSION tauri.conf.json=$tauri_version Cargo.toml=$cargo_version"
+            exit 1
+          fi
+
       - name: abort if tag already exists
         env:
           TAG: v${{ steps.version.outputs.version }}
