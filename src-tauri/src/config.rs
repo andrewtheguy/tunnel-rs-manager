@@ -53,10 +53,6 @@ pub struct IrohConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auth_token_file: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub alpn_token: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub alpn_token_file: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub transport: Option<TransportConfig>,
     /// Age recipient (public key) recorded in exported configs so the secrets
     /// below can be re-encrypted with `tunnel-rs config-encryption encrypt-value`.
@@ -87,8 +83,6 @@ impl TunnelClientConfig {
                 socks5_proxy: None,
                 auth_token: None,
                 auth_token_file: None,
-                alpn_token: None,
-                alpn_token_file: None,
                 transport: None,
                 encryption_recipient: None,
             },
@@ -167,21 +161,6 @@ impl TunnelClientConfig {
             out.push_str(&format!("auth_token_file = {}\n", toml::Value::String(v.clone())));
         }
 
-        if let Some(ref v) = self.iroh.alpn_token {
-            if encrypted {
-                out.push_str("\n# ALPN protocol token (age-encrypted — safe to share with the recipient)\n");
-            } else {
-                out.push_str("\n# ALPN protocol token — placeholder only. Replace with an age-encrypted value:\n");
-                out.push_str("#   tunnel-rs config-encryption encrypt-value --recipient age1... <token>\n");
-            }
-            out.push_str(&format!("alpn_token = {}\n", toml::Value::String(v.clone())));
-        }
-
-        if let Some(ref v) = self.iroh.alpn_token_file {
-            out.push_str("\n# Path to file containing the ALPN token\n");
-            out.push_str(&format!("alpn_token_file = {}\n", toml::Value::String(v.clone())));
-        }
-
         if let Some(ref transport) = self.iroh.transport {
             let has_fields = transport.congestion_controller.is_some()
                 || transport.receive_window.is_some()
@@ -215,8 +194,6 @@ pub struct ServerGroup {
     pub server_node_id: String,
     #[serde(default)]
     pub auth_token: Option<String>,
-    #[serde(default)]
-    pub alpn_token: Option<String>,
     #[serde(default)]
     pub relay_urls: Vec<String>,
     #[serde(default)]
@@ -468,7 +445,6 @@ impl ConfigStore {
         config.iroh.request_source = forwarding.source.clone();
         config.iroh.target = forwarding.target.clone();
         config.iroh.auth_token = group.auth_token.clone();
-        config.iroh.alpn_token = group.alpn_token.clone();
         config.iroh.relay_urls = group.relay_urls.clone();
 
         Ok(config)
@@ -560,7 +536,6 @@ mod tests {
         config.iroh.request_source = Some("tcp://127.0.0.1:22".to_string());
         config.iroh.target = Some("127.0.0.1:2222".to_string());
         config.iroh.auth_token = Some("XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX1234".to_string());
-        config.iroh.alpn_token = Some("XXXXXXXXXX1234".to_string());
 
         let json = config.to_json().unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -581,7 +556,6 @@ mod tests {
             name: "Test Group".to_string(),
             server_node_id: "test_node_123".to_string(),
             auth_token: Some("XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX1234".to_string()),
-            alpn_token: Some("XXXXXXXXXX1234".to_string()),
             relay_urls: vec!["https://relay.example.com".to_string()],
             created_at: 0,
             updated_at: 0,
@@ -605,7 +579,6 @@ mod tests {
         assert_eq!(config.iroh.request_source, Some("tcp://127.0.0.1:22".to_string()));
         assert_eq!(config.iroh.target, Some("127.0.0.1:2222".to_string()));
         assert_eq!(config.iroh.auth_token, Some("XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX1234".to_string()));
-        assert_eq!(config.iroh.alpn_token, Some("XXXXXXXXXX1234".to_string()));
         assert_eq!(config.iroh.relay_urls.len(), 1);
     }
 
@@ -615,7 +588,6 @@ mod tests {
         config.iroh.request_source = Some("tcp://127.0.0.1:8080".to_string());
         config.iroh.target = Some("127.0.0.1:22".to_string());
         config.iroh.auth_token = Some("secret_auth".to_string());
-        config.iroh.alpn_token = Some("secret_alpn".to_string());
         config.iroh.relay_urls = vec!["https://relay.example.com".to_string()];
         config.iroh.transport = Some(TransportConfig {
             congestion_controller: Some("bbr".to_string()),
@@ -632,7 +604,6 @@ mod tests {
         assert_eq!(parsed["iroh"]["request_source"].as_str().unwrap(), "tcp://127.0.0.1:8080");
         assert_eq!(parsed["iroh"]["target"].as_str().unwrap(), "127.0.0.1:22");
         assert_eq!(parsed["iroh"]["auth_token"].as_str().unwrap(), "secret_auth");
-        assert_eq!(parsed["iroh"]["alpn_token"].as_str().unwrap(), "secret_alpn");
         assert_eq!(parsed["iroh"]["relay_urls"].as_array().unwrap().len(), 1);
         assert_eq!(parsed["iroh"]["transport"]["congestion_controller"].as_str().unwrap(), "bbr");
         assert_eq!(parsed["iroh"]["transport"]["receive_window"].as_integer().unwrap(), 1048576);

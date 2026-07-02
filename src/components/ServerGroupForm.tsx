@@ -76,17 +76,6 @@ function validateAuthToken(token: string): string | null {
     return validateBase64UrlCrc16(token.slice(1), 'Auth token');
 }
 
-/** ALPN token: 14-char Base64URL(8 random bytes + 2-byte CRC16 BE), no prefix */
-function validateAlpnToken(token: string): string | null {
-    if (!token) {
-        return 'ALPN token is required';
-    }
-    if (token.length !== 14) {
-        return `ALPN token must be exactly 14 characters (got ${token.length})`;
-    }
-    return validateBase64UrlCrc16(token, 'ALPN token');
-}
-
 interface ServerGroupFormProps {
     initial?: ServerGroupFormData;
     onSubmit: (data: ServerGroupFormData) => Promise<void>;
@@ -99,23 +88,16 @@ export function ServerGroupForm({ initial, onSubmit, onCancel, isEditing = false
         name: '',
         server_node_id: '',
         auth_token: '',
-        alpn_token: '',
         relay_urls: '',
     });
     const [submitting, setSubmitting] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const appliedInitialRef = useRef(false);
     const normalizedAuthToken = form.auth_token.trim();
-    const normalizedAlpnToken = form.alpn_token.trim();
 
     const authTokenError = useMemo(
         () => validateAuthToken(normalizedAuthToken),
         [normalizedAuthToken]
-    );
-
-    const alpnTokenError = useMemo(
-        () => validateAlpnToken(normalizedAlpnToken),
-        [normalizedAlpnToken]
     );
 
     useEffect(() => {
@@ -140,7 +122,6 @@ export function ServerGroupForm({ initial, onSubmit, onCancel, isEditing = false
             name: form.name.trim(),
             server_node_id: form.server_node_id.trim(),
             auth_token: form.auth_token.trim(),
-            alpn_token: form.alpn_token.trim(),
             relay_urls: form.relay_urls.trim(),
         };
 
@@ -155,10 +136,6 @@ export function ServerGroupForm({ initial, onSubmit, onCancel, isEditing = false
         }
         if (authTokenError) {
             setError(authTokenError);
-            return;
-        }
-        if (alpnTokenError) {
-            setError(alpnTokenError);
             return;
         }
 
@@ -231,27 +208,6 @@ export function ServerGroupForm({ initial, onSubmit, onCancel, isEditing = false
                         <span className="field-error">{authTokenError}</span>
                     ) : (
                         <span className="help-text">47-character token from server admin</span>
-                    )}
-                </div>
-
-                <div className="form-group">
-                    <label htmlFor="alpn_token">ALPN Token *</label>
-                    <input
-                        id="alpn_token"
-                        type="password"
-                        value={form.alpn_token}
-                        onChange={handleChange('alpn_token')}
-                        placeholder="XXXXXXXXXXXXXX"
-                        className={alpnTokenError && normalizedAlpnToken ? 'input-error' : ''}
-                        autoCapitalize="none"
-                        autoComplete="off"
-                        autoCorrect="off"
-                        spellCheck={false}
-                    />
-                    {alpnTokenError && normalizedAlpnToken ? (
-                        <span className="field-error">{alpnTokenError}</span>
-                    ) : (
-                        <span className="help-text">14-character ALPN token from server admin</span>
                     )}
                 </div>
 

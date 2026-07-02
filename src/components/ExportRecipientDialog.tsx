@@ -70,9 +70,8 @@ export function ExportRecipientDialog({
             Exporting <strong>{forwardingName}</strong> as a tunnel-rs config.{' '}
             {encryptionConfigured ? (
               <>
-                Enter an age recipient (public key, <code>age1…</code>) to include the auth and
-                ALPN tokens encrypted to that key. Leave it blank to export placeholder values
-                only.
+                Enter an age recipient (public key, <code>age1…</code>) to include the auth token
+                encrypted to that key. Leave it blank to export placeholder values only.
               </>
             ) : (
               <>

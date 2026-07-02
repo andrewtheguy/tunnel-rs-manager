@@ -194,10 +194,10 @@ function App() {
   const handleEditGroup = useCallback(async (group: ServerGroup) => {
     saveScrollPosition();
     try {
-      const [auth, alpn] = await invoke<[string, string]>('get_decrypted_tokens', { id: group.id });
-      setEditingGroup({ ...group, auth_token: auth, alpn_token: alpn });
+      const auth = await invoke<string>('get_decrypted_tokens', { id: group.id });
+      setEditingGroup({ ...group, auth_token: auth });
     } catch {
-      setEditingGroup({ ...group, auth_token: '', alpn_token: '' });
+      setEditingGroup({ ...group, auth_token: '' });
     }
     setView('edit-group');
   }, [saveScrollPosition]);
