@@ -253,7 +253,7 @@ async fn get_server_group(state: State<'_, AppState>, id: String) -> Result<Serv
 async fn get_decrypted_tokens(
     state: State<'_, AppState>,
     id: String,
-) -> Result<(String, String), String> {
+) -> Result<String, String> {
     let uuid = Uuid::parse_str(&id).map_err(|e| format!("Invalid UUID: {}", e))?;
     let cipher_guard = state.cipher.lock().await;
     let cipher = cipher_guard
@@ -271,13 +271,7 @@ async fn get_decrypted_tokens(
         None => String::new(),
     };
 
-    let alpn = match &group.alpn_token {
-        Some(token) if crypto::is_encrypted(token) => cipher.decrypt(token)?,
-        Some(token) => token.clone(),
-        None => String::new(),
-    };
-
-    Ok((auth, alpn))
+    Ok(auth)
 }
 
 #[tauri::command]
@@ -286,14 +280,10 @@ async fn create_server_group(
     name: String,
     server_node_id: String,
     auth_token: String,
-    alpn_token: String,
     relay_urls: Option<Vec<String>>,
 ) -> Result<ServerGroup, String> {
     if auth_token.is_empty() {
         return Err("Auth token is required".to_string());
-    }
-    if alpn_token.is_empty() {
-        return Err("ALPN token is required".to_string());
     }
 
     let cipher_guard = state.cipher.lock().await;
@@ -302,7 +292,6 @@ async fn create_server_group(
         .ok_or_else(|| "Encryption not unlocked".to_string())?;
 
     let encrypted_auth = cipher.encrypt(&auth_token)?;
-    let encrypted_alpn = cipher.encrypt(&alpn_token)?;
 
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -314,7 +303,6 @@ async fn create_server_group(
         name,
         server_node_id,
         auth_token: Some(encrypted_auth),
-        alpn_token: Some(encrypted_alpn),
         relay_urls: relay_urls.unwrap_or_default(),
         created_at: now,
         updated_at: now,
@@ -333,14 +321,10 @@ async fn update_server_group(
     name: String,
     server_node_id: String,
     auth_token: String,
-    alpn_token: String,
     relay_urls: Option<Vec<String>>,
 ) -> Result<ServerGroup, String> {
     if auth_token.is_empty() {
         return Err("Auth token is required".to_string());
-    }
-    if alpn_token.is_empty() {
-        return Err("ALPN token is required".to_string());
     }
 
     let uuid = Uuid::parse_str(&id).map_err(|e| format!("Invalid UUID: {}", e))?;
@@ -351,7 +335,6 @@ async fn update_server_group(
         .ok_or_else(|| "Encryption not unlocked".to_string())?;
 
     let encrypted_auth = cipher.encrypt(&auth_token)?;
-    let encrypted_alpn = cipher.encrypt(&alpn_token)?;
 
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -369,7 +352,6 @@ async fn update_server_group(
         name,
         server_node_id,
         auth_token: Some(encrypted_auth),
-        alpn_token: Some(encrypted_alpn),
         relay_urls: relay_urls.unwrap_or_default(),
         created_at,
         updated_at: now,
@@ -539,8 +521,7 @@ async fn import_configs(
         .config
         .server_groups
         .values()
-        .flat_map(|g| [g.auth_token.as_deref(), g.alpn_token.as_deref()])
-        .flatten()
+        .filter_map(|g| g.auth_token.as_deref())
         .any(crypto::is_encrypted);
 
     if has_encrypted {
@@ -556,8 +537,7 @@ async fn import_configs(
                 .config
                 .server_groups
                 .values()
-                .flat_map(|g| [g.auth_token.as_deref(), g.alpn_token.as_deref()])
-                .flatten()
+                .filter_map(|g| g.auth_token.as_deref())
                 .filter(|v| crypto::is_encrypted(v))
                 .any(|v| current.decrypt(v).is_err())
         };
@@ -596,12 +576,10 @@ async fn import_configs(
                 .as_ref()
                 .ok_or_else(|| "Unlock your passphrase before importing encrypted configs.".to_string())?;
             for group in export_data.config.server_groups.values_mut() {
-                for token in [&mut group.auth_token, &mut group.alpn_token] {
-                    if let Some(v) = token {
-                        if crypto::is_encrypted(v) {
-                            let plaintext = source_cipher.decrypt(v)?;
-                            *token = Some(current.encrypt(&plaintext)?);
-                        }
+                if let Some(v) = &mut group.auth_token {
+                    if crypto::is_encrypted(v) {
+                        let plaintext = source_cipher.decrypt(v)?;
+                        group.auth_token = Some(current.encrypt(&plaintext)?);
                     }
                 }
             }
@@ -662,15 +640,13 @@ async fn export_forwarding_toml(
                 .as_ref()
                 .ok_or_else(|| "Encryption not unlocked".to_string())?;
 
-            for token in [&mut config.iroh.auth_token, &mut config.iroh.alpn_token] {
-                if let Some(value) = token {
-                    let plaintext = if crypto::is_encrypted(value) {
-                        cipher.decrypt(value)?
-                    } else {
-                        value.clone()
-                    };
-                    *token = Some(age_export::encrypt_value(&plaintext, &r)?);
-                }
+            if let Some(value) = &mut config.iroh.auth_token {
+                let plaintext = if crypto::is_encrypted(value) {
+                    cipher.decrypt(value)?
+                } else {
+                    value.clone()
+                };
+                config.iroh.auth_token = Some(age_export::encrypt_value(&plaintext, &r)?);
             }
             drop(cipher_guard);
 
@@ -689,10 +665,8 @@ async fn export_forwarding_toml(
         }
         None => {
             // No recipient: never emit real secrets, only placeholders.
-            for token in [&mut config.iroh.auth_token, &mut config.iroh.alpn_token] {
-                if token.is_some() {
-                    *token = Some(TOKEN_PLACEHOLDER.to_string());
-                }
+            if config.iroh.auth_token.is_some() {
+                config.iroh.auth_token = Some(TOKEN_PLACEHOLDER.to_string());
             }
             Ok(config.to_commented_toml(&forwarding_name, &group_name))
         }
@@ -751,23 +725,12 @@ async fn start_tunnel(state: State<'_, AppState>, forwarding_id: String) -> Resu
                 group.name
             ));
         }
-        if group.alpn_token.is_none() {
-            return Err(format!(
-                "ALPN token is required. Please edit server group '{}' and add an ALPN token.",
-                group.name
-            ));
-        }
 
         let mut config = store.build_tunnel_config(uuid)?;
 
         if let Some(ref auth) = config.iroh.auth_token {
             if crypto::is_encrypted(auth) {
                 config.iroh.auth_token = Some(cipher.decrypt(auth)?);
-            }
-        }
-        if let Some(ref alpn) = config.iroh.alpn_token {
-            if crypto::is_encrypted(alpn) {
-                config.iroh.alpn_token = Some(cipher.decrypt(alpn)?);
             }
         }
 

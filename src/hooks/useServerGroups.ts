@@ -67,7 +67,6 @@ export function useServerGroups() {
                 name: form.name,
                 serverNodeId: form.server_node_id,
                 authToken: form.auth_token,
-                alpnToken: form.alpn_token,
                 relayUrls: parseRelayUrls(form.relay_urls),
             });
 
@@ -95,7 +94,6 @@ export function useServerGroups() {
                 name: form.name,
                 serverNodeId: form.server_node_id,
                 authToken: form.auth_token,
-                alpnToken: form.alpn_token,
                 relayUrls: parseRelayUrls(form.relay_urls),
             });
 
